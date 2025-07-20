@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <random>
 #include <chrono>
+#include <iostream>
 
 namespace nigamp {
 
@@ -47,19 +48,24 @@ const Song* ShufflePlaylist::current() const {
 
 const Song* ShufflePlaylist::next() {
     if (empty()) {
+        std::cout << "Playlist is empty, cannot get next song." << std::endl;
         return nullptr;
     }
     
     const auto& playlist = m_is_shuffled ? m_shuffled_songs : m_songs;
     
     if (m_current_index + 1 < playlist.size()) {
+        std::cout << "[DEBUG] next() current index: " << m_current_index << std::endl;
+        std::cout << "[DEBUG] next() playlist size: " << playlist.size() << std::endl;
         ++m_current_index;
         return &playlist[m_current_index];
     } else if (playlist.size() == 1) {
+        std::cout << "[DEBUG] next() single song, returning same song" << std::endl;
         // For single song, restart the same song
         return &playlist[m_current_index];
     } else {
         // Loop back to first song
+        std::cout << "[DEBUG] next() looping to first song" << std::endl;
         m_current_index = 0;
         return &playlist[m_current_index];
     }

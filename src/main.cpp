@@ -24,6 +24,7 @@ private:
     std::atomic<bool> m_should_quit{false};
     std::atomic<bool> m_is_paused{false};
     std::atomic<bool> m_advance_to_next{false};
+    std::atomic<bool> m_stop_playback{false};
     std::thread m_playback_thread;
     std::thread m_reindex_thread;
     std::mutex m_playlist_mutex;
@@ -205,6 +206,7 @@ private:
     void handle_track_advance() {
         std::lock_guard<std::mutex> lock(m_playlist_mutex);
         
+        // For automatic advancement after song completion, move to next song
         const Song* next_song = m_playlist->next();
         if (next_song) {
             std::cout << "Auto-advancing to next track: " << next_song->title << "\n";
@@ -217,12 +219,22 @@ private:
     }
     
     void next_track() {
+        std::cout << "Attempting to have a mutex lock for next_track()" << std::endl;
         std::lock_guard<std::mutex> lock(m_playlist_mutex);
+        std::cout << "Mutex lock acquired for next_track()" << std::endl;
+        
         const Song* next_song = m_playlist->next();
         if (next_song) {
             stop_current_song();
+            std::cout << "[DEBUG] next_track() stopping current song" << std::endl;
+            std::cout << "[DEBUG] next_track() setting current song to next song" << std::endl;
+            std::cout << "[DEBUG] next_track() calling play_current_song()" << std::endl;
+            std::cout << "Now playing: " << next_song->title << "\n";
             m_current_song = next_song;
             play_current_song();
+        }
+        else {
+            std::cout << "No next track available\n";
         }
     }
     
@@ -298,23 +310,35 @@ private:
     }
     
     void stop_current_song() {
+        std::cout << "Stopping current song: " << (m_current_song ? m_current_song->title : "None") << "\n";
         // Signal playback thread to stop if it's running
         if (m_playback_thread.joinable()) {
-            // Audio engine stop will cause playback loop to exit
+            std::cout << "Stopping playback thread...\n";
+            // Signal playback loop to exit
+            m_stop_playback = true;
             if (m_audio_engine) {
+                std::cout << "Stopping audio engine...\n";
                 m_audio_engine->stop();
             }
             
-            // Wait for thread to finish
+            // Force immediate decoder close for instant stopping
+            if (m_current_decoder) {
+                std::cout << "Force closing decoder for instant stop...\n";
+                m_current_decoder->close();
+            }
+            
+            std::cout << "Waiting for playback thread to finish...\n";
             m_playback_thread.join();
+            std::cout << "Playback thread stopped\n";
+            m_stop_playback = false; // Reset for next playback
         }
-        
+
         if (m_current_decoder) {
-            m_current_decoder->close();
+            std::cout << "Resetting decoder...\n";
             m_current_decoder.reset();
         }
-    }
-    
+    }    
+
     void playback_loop() {
         try {
             AudioBuffer buffer;
@@ -326,7 +350,7 @@ private:
             bool song_completed = false;
             bool preview_completed = false;
             
-            while (!m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
+            while (!m_stop_playback && !m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
                 // Check if preview mode time limit reached
                 if (m_preview_mode) {
                     auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -348,13 +372,15 @@ private:
                     }
                 }
                 
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             
             // Check why the loop ended
             if (m_current_decoder && m_current_decoder->is_eof()) {
                 std::cout << "Song completed normally (EOF reached)\n";
                 song_completed = true;
+            } else if (m_stop_playback) {
+                std::cout << "Playback stopped due to stop signal\n";
             } else if (m_should_quit) {
                 std::cout << "Playback stopped due to quit signal\n";
             } else if (!m_current_decoder) {
@@ -362,7 +388,7 @@ private:
             }
             
             // Only advance to next track if song actually completed or preview finished
-            if (!m_should_quit && (song_completed || preview_completed)) {
+            if (!m_stop_playback && !m_should_quit && (song_completed || preview_completed)) {
                 std::cout << "Signaling track advance...\n";
                 m_advance_to_next = true;
             }

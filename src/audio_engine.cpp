@@ -211,11 +211,24 @@ bool DirectSoundEngine::stop() {
     m_impl->is_playing = false;
     m_impl->should_stop = true;
     
+    // Clear pending audio samples immediately for instant stop
+    {
+        std::lock_guard<std::mutex> lock(m_impl->buffer_mutex);
+        m_impl->pending_samples.clear();
+    }
+    
     if (m_impl->playback_thread.joinable()) {
         m_impl->playback_thread.join();
     }
     
     HRESULT hr = m_impl->secondary_buffer->Stop();
+    
+    // Reset write cursor position for clean start on next play
+    m_impl->write_cursor = 0;
+    
+    // Optionally reset playback position to beginning for immediate silence
+    m_impl->secondary_buffer->SetCurrentPosition(0);
+    
     return SUCCEEDED(hr);
 }
 
