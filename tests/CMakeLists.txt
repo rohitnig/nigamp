@@ -20,6 +20,37 @@ set(TEST_SOURCES
     test_audio_engine.cpp
 )
 
+# Standalone hotkey test (separate executable)
+add_executable(test_hotkey_handler 
+    test_hotkey_handler.cpp
+    ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
+)
+
+# Link libraries for hotkey test
+target_link_libraries(test_hotkey_handler user32)
+
+# Include directories for hotkey test
+target_include_directories(test_hotkey_handler PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+# Music player simulation test (separate executable)
+add_executable(test_music_player_simulation 
+    test_music_player_simulation.cpp
+    ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
+    ${CMAKE_SOURCE_DIR}/src/playlist.cpp
+)
+
+# Link libraries for music player test
+target_link_libraries(test_music_player_simulation user32)
+
+# Include directories for music player test
+target_include_directories(test_music_player_simulation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 # Create test executable
 add_executable(nigamp_tests ${TEST_SOURCES})
 

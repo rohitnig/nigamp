@@ -83,20 +83,36 @@ TEST_F(PlaylistTest, Shuffle) {
     
     std::vector<std::string> original_order;
     playlist->reset();
-    while (const auto* song = playlist->current()) {
+    // Collect songs by iterating through the playlist size, not until next() fails
+    for (size_t i = 0; i < playlist->size(); ++i) {
+        const auto* song = playlist->current();
+        ASSERT_NE(song, nullptr);
         original_order.push_back(song->file_path);
-        if (!playlist->next()) break;
+        if (i < playlist->size() - 1) {  // Don't call next() on the last iteration
+            playlist->next();
+        }
     }
     
     playlist->shuffle();
     
     std::vector<std::string> shuffled_order;
-    while (const auto* song = playlist->current()) {
+    // Same approach: iterate by size, not until next() fails
+    for (size_t i = 0; i < playlist->size(); ++i) {
+        const auto* song = playlist->current();
+        ASSERT_NE(song, nullptr);
         shuffled_order.push_back(song->file_path);
-        if (!playlist->next()) break;
+        if (i < playlist->size() - 1) {  // Don't call next() on the last iteration
+            playlist->next();
+        }
     }
     
     EXPECT_EQ(original_order.size(), shuffled_order.size());
+    EXPECT_EQ(original_order.size(), 10);
+    
+    // Verify all original songs are still present after shuffle
+    std::sort(original_order.begin(), original_order.end());
+    std::sort(shuffled_order.begin(), shuffled_order.end());
+    EXPECT_EQ(original_order, shuffled_order);
 }
 
 TEST_F(PlaylistTest, Clear) {

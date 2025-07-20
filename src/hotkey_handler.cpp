@@ -10,6 +10,7 @@ struct WindowsHotkeyHandler::Impl {
     HWND window_handle = nullptr;
     HotkeyCallback callback;
     std::thread message_thread;
+    std::thread console_input_thread;
     std::atomic<bool> should_stop{false};
     
     static constexpr int HOTKEY_NEXT = 1;
@@ -20,6 +21,7 @@ struct WindowsHotkeyHandler::Impl {
     static constexpr int HOTKEY_QUIT = 6;
     
     bool create_window() {
+        // Create message-only window for global hotkeys
         WNDCLASSEX wc = {};
         wc.cbSize = sizeof(WNDCLASSEX);
         wc.lpfnWndProc = window_proc;
@@ -67,6 +69,7 @@ struct WindowsHotkeyHandler::Impl {
         return DefWindowProc(hwnd, msg, wparam, lparam);
     }
     
+    
     void handle_hotkey(int hotkey_id) {
         std::cout << "[HOTKEY DEBUG] handle_hotkey called with ID: " << hotkey_id << std::endl;
         
@@ -109,7 +112,7 @@ struct WindowsHotkeyHandler::Impl {
         int heartbeat_counter = 0;
         
         while (!should_stop) {
-            BOOL result = PeekMessage(&msg, window_handle, 0, 0, PM_REMOVE);
+            BOOL result = PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE);
             if (result > 0) {
                 std::cout << "[HOTKEY DEBUG] Message received: " << msg.message << std::endl;
                 TranslateMessage(&msg);
@@ -127,6 +130,51 @@ struct WindowsHotkeyHandler::Impl {
         }
         
         std::cout << "[HOTKEY DEBUG] Message loop thread stopped" << std::endl;
+    }
+    
+    void console_input_loop() {
+        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread started" << std::endl;
+        
+        while (!should_stop) {
+            // Check if Ctrl is pressed
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+                // Check for local hotkey combinations
+                if (GetAsyncKeyState('N') & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering NEXT_TRACK (Ctrl+N)" << std::endl;
+                    if (callback) callback(HotkeyAction::NEXT_TRACK);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Prevent rapid repeats
+                }
+                else if (GetAsyncKeyState('P') & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering PREVIOUS_TRACK (Ctrl+P)" << std::endl;
+                    if (callback) callback(HotkeyAction::PREVIOUS_TRACK);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+                else if (GetAsyncKeyState('R') & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering PAUSE_RESUME (Ctrl+R)" << std::endl;
+                    if (callback) callback(HotkeyAction::PAUSE_RESUME);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+                else if (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering VOLUME_UP (Ctrl+Plus)" << std::endl;
+                    if (callback) callback(HotkeyAction::VOLUME_UP);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+                else if (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering VOLUME_DOWN (Ctrl+Minus)" << std::endl;
+                    if (callback) callback(HotkeyAction::VOLUME_DOWN);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+                else if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering QUIT (Ctrl+Escape)" << std::endl;
+                    if (callback) callback(HotkeyAction::QUIT);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        
+        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread stopped" << std::endl;
     }
 };
 
@@ -147,6 +195,10 @@ void WindowsHotkeyHandler::shutdown() {
     if (m_impl->message_thread.joinable()) {
         m_impl->message_thread.join();
     }
+    if (m_impl->console_input_thread.joinable()) {
+        m_impl->console_input_thread.join();
+    }
+    
     
     if (m_impl->window_handle) {
         DestroyWindow(m_impl->window_handle);
@@ -238,6 +290,15 @@ void WindowsHotkeyHandler::process_messages() {
         std::cout << "[HOTKEY DEBUG] Message thread should be running now" << std::endl;
     } else {
         std::cout << "[HOTKEY DEBUG] Message thread already running" << std::endl;
+    }
+    
+    if (!m_impl->console_input_thread.joinable()) {
+        std::cout << "[LOCAL HOTKEY DEBUG] Starting console input thread..." << std::endl;
+        m_impl->console_input_thread = std::thread(&Impl::console_input_loop, m_impl.get());
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread should be running now" << std::endl;
+    } else {
+        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread already running" << std::endl;
     }
 }
 

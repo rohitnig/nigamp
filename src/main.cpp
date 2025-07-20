@@ -116,13 +116,21 @@ public:
     void run(const std::string& path = "", bool is_file = false) {
         std::cout << "Nigamp - Ultra-Lightweight MP3 Player\n";
         std::cout << "======================================\n";
-        std::cout << "Hotkeys:\n";
+        std::cout << "Global Hotkeys (work anywhere):\n";
         std::cout << "  Ctrl+Alt+N      - Next track\n";
         std::cout << "  Ctrl+Alt+P      - Previous track\n";
         std::cout << "  Ctrl+Alt+R      - Pause/Resume\n";
         std::cout << "  Ctrl+Alt+Plus   - Volume up\n";
         std::cout << "  Ctrl+Alt+Minus  - Volume down\n";
         std::cout << "  Ctrl+Alt+Escape - Quit\n";
+        std::cout << "\n";
+        std::cout << "Local Hotkeys (when console focused):\n";
+        std::cout << "  Ctrl+N          - Next track\n";
+        std::cout << "  Ctrl+P          - Previous track\n";
+        std::cout << "  Ctrl+R          - Pause/Resume\n";
+        std::cout << "  Ctrl+Plus       - Volume up\n";
+        std::cout << "  Ctrl+Minus      - Volume down\n";
+        std::cout << "  Ctrl+Escape     - Quit\n";
         std::cout << "======================================\n\n";
         
         bool loaded = false;
@@ -136,8 +144,8 @@ public:
                 m_current_directory = path;
             }
         } else {
-            loaded = load_directory(".");
-            m_current_directory = ".";
+            loaded = load_directory("C:\\Music");
+            m_current_directory = "C:\\Music";
         }
         
         if (!loaded) {
@@ -517,16 +525,22 @@ int main(int argc, char* argv[]) {
                 std::cout << "  --preview, -p                Play only first 10 seconds of each song\n";
                 std::cout << "  --help, -h                   Show this help message\n";
                 std::cout << "\nUsage Examples:\n";
-                std::cout << "  nigamp                       Scan current directory for MP3/WAV files\n";
+                std::cout << "  nigamp                       Scan C:\\Music directory for MP3/WAV files\n";
                 std::cout << "  nigamp --file song.mp3       Play single file\n";
                 std::cout << "  nigamp --folder \"C:\\Music\"   Play all files from folder\n";
                 std::cout << "  nigamp -f song.mp3 -p        Play single file in preview mode\n";
-                std::cout << "\nHotkeys:\n";
+                std::cout << "\nGlobal Hotkeys (work anywhere):\n";
                 std::cout << "  Ctrl+Alt+N                   Next track\n";
                 std::cout << "  Ctrl+Alt+P                   Previous track\n";
                 std::cout << "  Ctrl+Alt+R                   Pause/Resume\n";
                 std::cout << "  Ctrl+Alt+Plus/Minus          Volume control\n";
                 std::cout << "  Ctrl+Alt+Escape              Quit\n";
+                std::cout << "\nLocal Hotkeys (when console focused):\n";
+                std::cout << "  Ctrl+N                       Next track\n";
+                std::cout << "  Ctrl+P                       Previous track\n";
+                std::cout << "  Ctrl+R                       Pause/Resume\n";
+                std::cout << "  Ctrl+Plus/Minus              Volume control\n";
+                std::cout << "  Ctrl+Escape                  Quit\n";
                 return 0;
             } else {
                 std::cerr << "Unknown argument: " << arg << "\n";
