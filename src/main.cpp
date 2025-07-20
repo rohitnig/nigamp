@@ -9,6 +9,7 @@
 #include <chrono>
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
 
 namespace nigamp {
 
@@ -22,8 +23,10 @@ private:
     
     std::atomic<bool> m_should_quit{false};
     std::atomic<bool> m_is_paused{false};
+    std::atomic<bool> m_advance_to_next{false};
     std::thread m_playback_thread;
     std::thread m_reindex_thread;
+    std::mutex m_playlist_mutex;
     
     const Song* m_current_song = nullptr;
     float m_volume = 0.8f;
@@ -58,11 +61,14 @@ public:
         });
         
         if (!m_hotkey_handler->register_hotkeys()) {
-            std::cout << "Warning: Failed to register hotkeys (try running as administrator)\n";
+            std::cout << "Warning: Failed to register some hotkeys (try running as administrator)\n";
             std::cout << "Player will work without global hotkeys\n";
         } else {
-            std::cout << "Global hotkeys registered: Ctrl+Alt+N (next), Ctrl+Alt+P (prev), Ctrl+Alt+Space (pause)\n";
+            std::cout << "Global hotkeys registered successfully!\n";
         }
+        
+        // Start the message loop immediately after hotkey registration
+        m_hotkey_handler->process_messages();
         
         return true;
     }
@@ -144,38 +150,66 @@ public:
         
         play_current_song();
         
-        m_hotkey_handler->process_messages();
-        
         while (!m_should_quit) {
+            // Handle track advancement requests from playback thread
+            if (m_advance_to_next.exchange(false)) {
+                handle_track_advance();
+            }
+            
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
     
 private:
     void handle_hotkey(HotkeyAction action) {
+        std::cout << "[HOTKEY DEBUG] Main application handle_hotkey called with action: " << static_cast<int>(action) << std::endl;
+        
         switch (action) {
             case HotkeyAction::NEXT_TRACK:
+                std::cout << "[HOTKEY DEBUG] Executing next_track()" << std::endl;
                 next_track();
                 break;
             case HotkeyAction::PREVIOUS_TRACK:
+                std::cout << "[HOTKEY DEBUG] Executing previous_track()" << std::endl;
                 previous_track();
                 break;
             case HotkeyAction::PAUSE_RESUME:
+                std::cout << "[HOTKEY DEBUG] Executing toggle_pause()" << std::endl;
                 toggle_pause();
                 break;
             case HotkeyAction::VOLUME_UP:
+                std::cout << "[HOTKEY DEBUG] Executing adjust_volume(+0.1)" << std::endl;
                 adjust_volume(0.1f);
                 break;
             case HotkeyAction::VOLUME_DOWN:
+                std::cout << "[HOTKEY DEBUG] Executing adjust_volume(-0.1)" << std::endl;
                 adjust_volume(-0.1f);
                 break;
             case HotkeyAction::QUIT:
+                std::cout << "[HOTKEY DEBUG] Executing quit()" << std::endl;
                 quit();
                 break;
+        }
+        
+        std::cout << "[HOTKEY DEBUG] Main application handle_hotkey completed" << std::endl;
+    }
+    
+    void handle_track_advance() {
+        std::lock_guard<std::mutex> lock(m_playlist_mutex);
+        
+        const Song* next_song = m_playlist->next();
+        if (next_song) {
+            std::cout << "Auto-advancing to next track: " << next_song->title << "\n";
+            stop_current_song();
+            m_current_song = next_song;
+            play_current_song();
+        } else {
+            std::cout << "No more tracks, staying on current song\n";
         }
     }
     
     void next_track() {
+        std::lock_guard<std::mutex> lock(m_playlist_mutex);
         const Song* next_song = m_playlist->next();
         if (next_song) {
             stop_current_song();
@@ -185,6 +219,7 @@ private:
     }
     
     void previous_track() {
+        std::lock_guard<std::mutex> lock(m_playlist_mutex);
         const Song* prev_song = m_playlist->previous();
         if (prev_song) {
             stop_current_song();
@@ -255,12 +290,15 @@ private:
     }
     
     void stop_current_song() {
+        // Signal playback thread to stop if it's running
         if (m_playback_thread.joinable()) {
+            // Audio engine stop will cause playback loop to exit
+            if (m_audio_engine) {
+                m_audio_engine->stop();
+            }
+            
+            // Wait for thread to finish
             m_playback_thread.join();
-        }
-        
-        if (m_audio_engine) {
-            m_audio_engine->stop();
         }
         
         if (m_current_decoder) {
@@ -270,44 +308,60 @@ private:
     }
     
     void playback_loop() {
-        AudioBuffer buffer;
-        size_t buffer_size = m_audio_engine->get_buffer_size();
-        
-        auto start_time = std::chrono::steady_clock::now();
-        const auto preview_duration = std::chrono::seconds(10);
-        
-        while (!m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
-            // Check if preview mode time limit reached
-            if (m_preview_mode) {
-                auto elapsed = std::chrono::steady_clock::now() - start_time;
-                if (elapsed >= preview_duration) {
-                    if (m_current_song) {
-                        std::cout << "Preview complete for: " << m_current_song->title << "\n";
+        try {
+            AudioBuffer buffer;
+            size_t buffer_size = m_audio_engine->get_buffer_size();
+            
+            auto start_time = std::chrono::steady_clock::now();
+            const auto preview_duration = std::chrono::seconds(10);
+            
+            bool song_completed = false;
+            bool preview_completed = false;
+            
+            while (!m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
+                // Check if preview mode time limit reached
+                if (m_preview_mode) {
+                    auto elapsed = std::chrono::steady_clock::now() - start_time;
+                    if (elapsed >= preview_duration) {
+                        if (m_current_song) {
+                            std::cout << "Preview complete for: " << m_current_song->title << "\n";
+                        }
+                        preview_completed = true;
+                        break;
                     }
-                    break;
                 }
-            }
-            
-            if (!m_is_paused) {
-                if (m_current_decoder->decode(buffer, buffer_size)) {
-                    m_audio_engine->write_samples(buffer);
-                } else {
-                    break;
-                }
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        
-        // Auto-advance to next song after preview or if song finished
-        if (!m_should_quit && ((m_preview_mode) || (m_current_decoder && m_current_decoder->is_eof()))) {
-            auto next_song = m_playlist->next();
-            if (next_song) {
-                m_current_song = next_song;
                 
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                play_current_song();
+                if (!m_is_paused) {
+                    if (m_current_decoder->decode(buffer, buffer_size)) {
+                        m_audio_engine->write_samples(buffer);
+                    } else {
+                        std::cout << "Decode failed, ending playback\n";
+                        break;
+                    }
+                }
+                
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
+            
+            // Check why the loop ended
+            if (m_current_decoder && m_current_decoder->is_eof()) {
+                std::cout << "Song completed normally (EOF reached)\n";
+                song_completed = true;
+            } else if (m_should_quit) {
+                std::cout << "Playback stopped due to quit signal\n";
+            } else if (!m_current_decoder) {
+                std::cout << "Playback stopped due to decoder loss\n";
+            }
+            
+            // Only advance to next track if song actually completed or preview finished
+            if (!m_should_quit && (song_completed || preview_completed)) {
+                std::cout << "Signaling track advance...\n";
+                m_advance_to_next = true;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception in playback_loop: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Unknown exception in playback_loop" << std::endl;
         }
     }
     
@@ -318,18 +372,24 @@ private:
     }
     
     void reindexing_loop() {
-        while (!m_should_quit) {
-            std::this_thread::sleep_for(std::chrono::minutes(1)); // Check every minute
-            
-            if (m_should_quit) break;
-            
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - m_last_index_time);
-            
-            if (elapsed.count() >= REINDEX_INTERVAL_MINUTES) {
-                reindex_directory();
-                m_last_index_time = now;
+        try {
+            while (!m_should_quit) {
+                std::this_thread::sleep_for(std::chrono::minutes(1)); // Check every minute
+                
+                if (m_should_quit) break;
+                
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - m_last_index_time);
+                
+                if (elapsed.count() >= REINDEX_INTERVAL_MINUTES) {
+                    reindex_directory();
+                    m_last_index_time = now;
+                }
             }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception in reindexing_loop: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Unknown exception in reindexing_loop" << std::endl;
         }
     }
     
@@ -337,36 +397,39 @@ private:
         if (m_current_directory.empty()) return;
         
         SongList new_songs = m_file_scanner->scan_directory(m_current_directory);
-        SongList current_songs;
         
-        // Get current playlist songs
-        size_t playlist_size = m_playlist->size();
-        if (playlist_size > 0) {
-            // Simple approach: if song count changed, update playlist
-            if (new_songs.size() != playlist_size) {
-                std::cout << "Directory updated: Found " << new_songs.size() 
-                         << " songs (was " << playlist_size << ")\n";
-                
-                // Store current song info to try to maintain playback
-                std::string current_song_path;
-                if (m_current_song) {
-                    current_song_path = m_current_song->file_path;
-                }
-                
-                // Update playlist
-                m_playlist->clear();
-                for (const auto& song : new_songs) {
-                    m_playlist->add_song(song);
-                }
-                
-                if (!new_songs.empty()) {
-                    m_playlist->shuffle();
+        {
+            std::lock_guard<std::mutex> lock(m_playlist_mutex);
+            
+            // Get current playlist songs
+            size_t playlist_size = m_playlist->size();
+            if (playlist_size > 0) {
+                // Simple approach: if song count changed, update playlist
+                if (new_songs.size() != playlist_size) {
+                    std::cout << "Directory updated: Found " << new_songs.size() 
+                             << " songs (was " << playlist_size << ")\n";
                     
-                    // Try to find the currently playing song in the new list
-                    if (!current_song_path.empty()) {
-                        // This is a simplified approach - in a full implementation
-                        // we might want to maintain playback position
-                        std::cout << "Playlist updated during playback\n";
+                    // Store current song info to try to maintain playback
+                    std::string current_song_path;
+                    if (m_current_song) {
+                        current_song_path = m_current_song->file_path;
+                    }
+                    
+                    // Update playlist
+                    m_playlist->clear();
+                    for (const auto& song : new_songs) {
+                        m_playlist->add_song(song);
+                    }
+                    
+                    if (!new_songs.empty()) {
+                        m_playlist->shuffle();
+                        
+                        // Try to find the currently playing song in the new list
+                        if (!current_song_path.empty()) {
+                            // This is a simplified approach - in a full implementation
+                            // we might want to maintain playback position
+                            std::cout << "Playlist updated during playbook\n";
+                        }
                     }
                 }
             }
@@ -374,14 +437,35 @@ private:
     }
     
     void shutdown() {
+        std::cout << "Shutting down music player...\n";
+        
+        // Signal all threads to stop
         m_should_quit = true;
         
-        // Stop reindexing thread
-        if (m_reindex_thread.joinable()) {
-            m_reindex_thread.join();
+        // Stop audio playback first
+        if (m_audio_engine) {
+            m_audio_engine->stop();
         }
         
-        stop_current_song();
+        // Wait for playback thread to finish
+        if (m_playback_thread.joinable()) {
+            std::cout << "Waiting for playback thread to finish...\n";
+            m_playback_thread.join();
+            std::cout << "Playback thread finished\n";
+        }
+        
+        // Wait for reindexing thread to finish
+        if (m_reindex_thread.joinable()) {
+            std::cout << "Waiting for reindexing thread to finish...\n";
+            m_reindex_thread.join();
+            std::cout << "Reindexing thread finished\n";
+        }
+        
+        // Clean up resources
+        if (m_current_decoder) {
+            m_current_decoder->close();
+            m_current_decoder.reset();
+        }
         
         if (m_hotkey_handler) {
             m_hotkey_handler->shutdown();
@@ -390,6 +474,8 @@ private:
         if (m_audio_engine) {
             m_audio_engine->shutdown();
         }
+        
+        std::cout << "Shutdown complete\n";
     }
 };
 

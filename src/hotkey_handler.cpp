@@ -25,17 +25,6 @@ struct WindowsHotkeyHandler::Impl {
         wc.lpfnWndProc = window_proc;
         wc.hInstance = GetModuleHandle(nullptr);
         wc.lpszClassName = "NigampHotkeyWindow";
-        wc.lpfnWndProc = [](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> LRESULT {
-            if (msg == WM_HOTKEY) {
-                WindowsHotkeyHandler::Impl* impl = 
-                    reinterpret_cast<WindowsHotkeyHandler::Impl*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-                if (impl && impl->callback) {
-                    impl->handle_hotkey(static_cast<int>(wparam));
-                }
-                return 0;
-            }
-            return DefWindowProc(hwnd, msg, wparam, lparam);
-        };
         
         RegisterClassEx(&wc);
         
@@ -51,51 +40,93 @@ struct WindowsHotkeyHandler::Impl {
     }
     
     static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+        // Log all messages for debugging (can be disabled later)
         if (msg == WM_HOTKEY) {
+            std::cout << "[HOTKEY DEBUG] WM_HOTKEY message received!" << std::endl;
+            std::cout << "[HOTKEY DEBUG] Hotkey ID: " << static_cast<int>(wparam) << std::endl;
+            std::cout << "[HOTKEY DEBUG] Modifiers: " << LOWORD(lparam) << ", VirtualKey: " << HIWORD(lparam) << std::endl;
+            
             WindowsHotkeyHandler::Impl* impl = 
                 reinterpret_cast<WindowsHotkeyHandler::Impl*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-            if (impl && impl->callback) {
-                impl->handle_hotkey(static_cast<int>(wparam));
+            
+            if (!impl) {
+                std::cout << "[HOTKEY DEBUG] ERROR: No impl pointer found!" << std::endl;
+                return 0;
             }
+            
+            if (!impl->callback) {
+                std::cout << "[HOTKEY DEBUG] ERROR: No callback set!" << std::endl;
+                return 0;
+            }
+            
+            std::cout << "[HOTKEY DEBUG] Calling handle_hotkey..." << std::endl;
+            impl->handle_hotkey(static_cast<int>(wparam));
+            std::cout << "[HOTKEY DEBUG] handle_hotkey completed" << std::endl;
             return 0;
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);
     }
     
     void handle_hotkey(int hotkey_id) {
+        std::cout << "[HOTKEY DEBUG] handle_hotkey called with ID: " << hotkey_id << std::endl;
+        
         switch (hotkey_id) {
             case HOTKEY_NEXT:
+                std::cout << "[HOTKEY DEBUG] Triggering NEXT_TRACK action" << std::endl;
                 callback(HotkeyAction::NEXT_TRACK);
                 break;
             case HOTKEY_PREV:
+                std::cout << "[HOTKEY DEBUG] Triggering PREVIOUS_TRACK action" << std::endl;
                 callback(HotkeyAction::PREVIOUS_TRACK);
                 break;
             case HOTKEY_PAUSE:
+                std::cout << "[HOTKEY DEBUG] Triggering PAUSE_RESUME action" << std::endl;
                 callback(HotkeyAction::PAUSE_RESUME);
                 break;
             case HOTKEY_VOLUME_UP:
+                std::cout << "[HOTKEY DEBUG] Triggering VOLUME_UP action" << std::endl;
                 callback(HotkeyAction::VOLUME_UP);
                 break;
             case HOTKEY_VOLUME_DOWN:
+                std::cout << "[HOTKEY DEBUG] Triggering VOLUME_DOWN action" << std::endl;
                 callback(HotkeyAction::VOLUME_DOWN);
                 break;
             case HOTKEY_QUIT:
+                std::cout << "[HOTKEY DEBUG] Triggering QUIT action" << std::endl;
                 callback(HotkeyAction::QUIT);
                 break;
+            default:
+                std::cout << "[HOTKEY DEBUG] ERROR: Unknown hotkey ID: " << hotkey_id << std::endl;
+                break;
         }
+        
+        std::cout << "[HOTKEY DEBUG] handle_hotkey finished" << std::endl;
     }
     
     void message_loop() {
+        std::cout << "[HOTKEY DEBUG] Message loop thread started" << std::endl;
         MSG msg;
+        int heartbeat_counter = 0;
+        
         while (!should_stop) {
             BOOL result = PeekMessage(&msg, window_handle, 0, 0, PM_REMOVE);
             if (result > 0) {
+                std::cout << "[HOTKEY DEBUG] Message received: " << msg.message << std::endl;
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                
+                // Heartbeat every 10 seconds
+                heartbeat_counter++;
+                if (heartbeat_counter >= 1000) { // 10ms * 1000 = 10 seconds
+                    std::cout << "[HOTKEY DEBUG] Message loop heartbeat (waiting for hotkeys...)" << std::endl;
+                    heartbeat_counter = 0;
+                }
             }
         }
+        
+        std::cout << "[HOTKEY DEBUG] Message loop thread stopped" << std::endl;
     }
 };
 
@@ -128,46 +159,54 @@ void WindowsHotkeyHandler::set_callback(HotkeyCallback callback) {
 }
 
 bool WindowsHotkeyHandler::register_hotkeys() {
+    std::cout << "[HOTKEY DEBUG] Starting hotkey registration..." << std::endl;
+    
     if (!m_impl->window_handle) {
+        std::cerr << "Cannot register hotkeys: Window handle not created\n";
         return false;
     }
     
+    std::cout << "[HOTKEY DEBUG] Window handle valid: " << m_impl->window_handle << std::endl;
     bool success = true;
     
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_NEXT, 
-                       MOD_CONTROL | MOD_ALT, 'N')) {
-        std::cerr << "Failed to register Ctrl+Alt+N hotkey (error: " << GetLastError() << ")\n";
-        success = false;
-    }
+    auto register_hotkey_with_error = [&](int id, UINT modifiers, UINT vk, const char* name) {
+        std::cout << "[HOTKEY DEBUG] Registering " << name << " (ID:" << id << ", Mod:" << modifiers << ", VK:" << vk << ")" << std::endl;
+        
+        if (!RegisterHotKey(m_impl->window_handle, id, modifiers, vk)) {
+            DWORD error = GetLastError();
+            std::cerr << "Failed to register " << name << " hotkey (error: " << error;
+            
+            switch (error) {
+                case 1409: // ERROR_HOTKEY_ALREADY_REGISTERED
+                    std::cerr << " - hotkey already in use by another application";
+                    break;
+                case 87: // ERROR_INVALID_PARAMETER
+                    std::cerr << " - invalid hotkey combination";
+                    break;
+                case 1400: // ERROR_INVALID_WINDOW_HANDLE
+                    std::cerr << " - invalid window handle";
+                    break;
+                default:
+                    std::cerr << " - unknown error";
+                    break;
+            }
+            std::cerr << ")\n";
+            success = false;
+        } else {
+            std::cout << "[HOTKEY DEBUG] Successfully registered " << name << std::endl;
+        }
+    };
     
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_PREV, 
-                       MOD_CONTROL | MOD_ALT, 'P')) {
-        std::cerr << "Failed to register Ctrl+Alt+P hotkey (error: " << GetLastError() << ")\n";
-        success = false;
-    }
+    register_hotkey_with_error(m_impl->HOTKEY_NEXT, MOD_CONTROL | MOD_ALT, 'N', "Ctrl+Alt+N");
+    register_hotkey_with_error(m_impl->HOTKEY_PREV, MOD_CONTROL | MOD_ALT, 'P', "Ctrl+Alt+P");
+    register_hotkey_with_error(m_impl->HOTKEY_PAUSE, MOD_CONTROL | MOD_ALT, 'R', "Ctrl+Alt+R");
+    register_hotkey_with_error(m_impl->HOTKEY_VOLUME_UP, MOD_CONTROL | MOD_ALT, VK_OEM_PLUS, "Ctrl+Alt+Plus");
+    register_hotkey_with_error(m_impl->HOTKEY_VOLUME_DOWN, MOD_CONTROL | MOD_ALT, VK_OEM_MINUS, "Ctrl+Alt+Minus");
+    register_hotkey_with_error(m_impl->HOTKEY_QUIT, MOD_CONTROL | MOD_ALT, VK_ESCAPE, "Ctrl+Alt+Escape");
     
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_PAUSE, 
-                       MOD_CONTROL | MOD_ALT, 'R')) {  // Changed to R for Resume
-        std::cerr << "Failed to register Ctrl+Alt+R hotkey (error: " << GetLastError() << ")\n";
-        success = false;
-    }
-    
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_VOLUME_UP, 
-                       MOD_CONTROL | MOD_ALT, VK_OEM_PLUS)) {  // Changed to Plus key
-        std::cerr << "Failed to register Ctrl+Alt+Plus hotkey (error: " << GetLastError() << ")\n";
-        success = false;
-    }
-    
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_VOLUME_DOWN, 
-                       MOD_CONTROL | MOD_ALT, VK_OEM_MINUS)) {  // Changed to Minus key
-        std::cerr << "Failed to register Ctrl+Alt+Minus hotkey (error: " << GetLastError() << ")\n";
-        success = false;
-    }
-    
-    if (!RegisterHotKey(m_impl->window_handle, m_impl->HOTKEY_QUIT, 
-                       MOD_CONTROL | MOD_ALT, VK_ESCAPE)) {
-        std::cerr << "Failed to register Ctrl+Alt+Escape hotkey (error: " << GetLastError() << ")\n";
-        success = false;
+    if (!success) {
+        std::cerr << "Note: Some hotkeys failed to register. Try closing other applications\n";
+        std::cerr << "or running as administrator to resolve conflicts.\n";
     }
     
     return success;
@@ -187,9 +226,18 @@ void WindowsHotkeyHandler::unregister_hotkeys() {
 }
 
 void WindowsHotkeyHandler::process_messages() {
+    std::cout << "[HOTKEY DEBUG] process_messages() called" << std::endl;
+    
     if (!m_impl->message_thread.joinable()) {
+        std::cout << "[HOTKEY DEBUG] Starting message thread..." << std::endl;
         m_impl->should_stop = false;
         m_impl->message_thread = std::thread(&Impl::message_loop, m_impl.get());
+        
+        // Give the thread a moment to start
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::cout << "[HOTKEY DEBUG] Message thread should be running now" << std::endl;
+    } else {
+        std::cout << "[HOTKEY DEBUG] Message thread already running" << std::endl;
     }
 }
 
