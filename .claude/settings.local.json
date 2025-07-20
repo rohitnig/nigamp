@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(move:*)",
+      "Bash(cmd /c \"move \"\"C:\\Users\\rohit\\Documents\\Sources\\nigamp\\include\\dr_wav.h\"\" \"\"C:\\Users\\rohit\\Documents\\Sources\\nigamp\\third_party\\dr_wav.h\"\"\")",
+      "Bash(powershell:*)",
+      "WebFetch(domain:www.gyan.dev)",
+      "Bash(curl:*)",
+      "Bash(.build.bat)",
+      "Bash(mingw32-make:*)"
+    ],
+    "deny": []
+  }
+}
