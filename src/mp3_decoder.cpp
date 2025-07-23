@@ -173,13 +173,10 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
         m_impl->is_eof = true;
     }
     
-    // For test files that fail to decode any real data
+    // Handle case where no samples were decoded this time
     if (samples_decoded == 0 && !m_impl->is_eof) {
-        // Generate minimal test data
-        size_t test_samples = std::min(max_samples, size_t(1024));
-        buffer.resize(test_samples, 0);
-        m_impl->is_eof = true;
-        return true;
+        // Return false - let playback loop handle it
+        return false;
     }
     
     return samples_decoded > 0;
