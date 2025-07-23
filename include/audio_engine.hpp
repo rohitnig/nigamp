@@ -3,8 +3,27 @@
 #include "types.hpp"
 #include <memory>
 #include <functional>
+#include <chrono>
 
 namespace nigamp {
+
+enum class AudioEngineError {
+    SUCCESS = 0,
+    CALLBACK_EXCEPTION = 1,
+    BUFFER_UNDERRUN = 2,
+    THREADING_ERROR = 3,
+    DIRECTSOUND_FAILURE = 4,
+    CALLBACK_TIMEOUT = 5
+};
+
+struct CompletionResult {
+    AudioEngineError error_code = AudioEngineError::SUCCESS;
+    std::string error_message;
+    std::chrono::milliseconds completion_time{0};
+    size_t samples_processed = 0;
+};
+
+using CompletionCallback = std::function<void(const CompletionResult&)>;
 
 class IAudioEngine {
 public:
@@ -20,6 +39,11 @@ public:
     virtual bool is_playing() const = 0;
     virtual void set_volume(float volume) = 0;
     virtual float get_volume() const = 0;
+    
+    // New callback-based completion detection
+    virtual void set_completion_callback(CompletionCallback callback) = 0;
+    virtual void signal_eof() = 0;
+    virtual size_t get_buffered_samples() const = 0;
 };
 
 class DirectSoundEngine : public IAudioEngine {
@@ -42,6 +66,11 @@ public:
     bool is_playing() const override;
     void set_volume(float volume) override;
     float get_volume() const override;
+    
+    // New callback-based completion detection
+    void set_completion_callback(CompletionCallback callback) override;
+    void signal_eof() override;
+    size_t get_buffered_samples() const override;
 };
 
 std::unique_ptr<IAudioEngine> create_audio_engine();

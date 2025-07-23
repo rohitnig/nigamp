@@ -27,11 +27,17 @@ private:
     std::atomic<bool> m_stop_playback{false};
     std::thread m_playback_thread;
     std::thread m_reindex_thread;
+    std::thread m_timeout_thread;
     std::mutex m_playlist_mutex;
     
     const Song* m_current_song = nullptr;
     float m_volume = 0.8f;
     bool m_preview_mode = false;
+    
+    // Safety timeout mechanism
+    std::atomic<bool> m_timeout_active{false};
+    std::chrono::steady_clock::time_point m_eof_signaled_time;
+    static constexpr int COMPLETION_TIMEOUT_SECONDS = 3;
     
     // Reindexing properties
     std::string m_current_directory = ".";
@@ -170,6 +176,42 @@ public:
     }
     
 private:
+    void start_completion_timeout() {
+        m_eof_signaled_time = std::chrono::steady_clock::now();
+        m_timeout_active = true;
+        
+        // Join any existing timeout thread
+        if (m_timeout_thread.joinable()) {
+            m_timeout_thread.join();
+        }
+        
+        m_timeout_thread = std::thread([this]() {
+            std::this_thread::sleep_for(std::chrono::seconds(COMPLETION_TIMEOUT_SECONDS));
+            
+            if (m_timeout_active.load()) {
+                std::cerr << "Warning: Audio completion callback timeout after " 
+                          << COMPLETION_TIMEOUT_SECONDS << " seconds. Forcing track advance.\n";
+                m_advance_to_next = true;
+                m_timeout_active = false;
+            }
+        });
+    }
+    
+    void handle_playback_completion(const CompletionResult& result) {
+        // Cancel timeout since callback fired successfully
+        m_timeout_active = false;
+        
+        if (result.error_code != AudioEngineError::SUCCESS) {
+            std::cerr << "Audio playback completed with error: " << result.error_message << "\n";
+        } else {
+            std::cout << "Audio playback completed successfully after " 
+                      << result.completion_time.count() << "ms\n";
+        }
+        
+        // Signal track advancement
+        m_advance_to_next = true;
+    }
+    
     void handle_hotkey(HotkeyAction action) {
         switch (action) {
             case HotkeyAction::NEXT_TRACK:
@@ -289,6 +331,11 @@ private:
             return;
         }
         
+        // Set up callback for track advancement
+        m_audio_engine->set_completion_callback([this](const CompletionResult& result) {
+            handle_playback_completion(result);
+        });
+        
         m_audio_engine->set_volume(m_volume);
         
         if (!m_audio_engine->start()) {
@@ -337,7 +384,6 @@ private:
             auto start_time = std::chrono::steady_clock::now();
             const auto preview_duration = std::chrono::seconds(10);
             
-            bool song_completed = false;
             bool preview_completed = false;
             
             while (!m_stop_playback && !m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
@@ -365,23 +411,22 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             
-            // Check why the loop ended
-            if (m_current_decoder && m_current_decoder->is_eof()) {
-                std::cout << "Song completed normally (EOF reached)\n";
-                song_completed = true;
-            } else if (m_stop_playback) {
-                std::cout << "Playback stopped due to stop signal\n";
-            } else if (m_should_quit) {
-                std::cout << "Playback stopped due to quit signal\n";
-            } else if (!m_current_decoder) {
-                std::cout << "Playback stopped due to decoder loss\n";
+            // Signal EOF to audio engine when decoding is complete
+            if (m_current_decoder && (m_current_decoder->is_eof() || preview_completed)) {
+                if (m_current_decoder->is_eof()) {
+                    std::cout << "Decoder reached EOF, signaling audio engine\n";
+                } else {
+                    std::cout << "Preview completed, signaling audio engine\n";
+                }
+                m_audio_engine->signal_eof();
+                
+                // Start timeout safety mechanism
+                start_completion_timeout();
             }
             
-            // Only advance to next track if song actually completed or preview finished
-            if (!m_stop_playback && !m_should_quit && (song_completed || preview_completed)) {
-                std::cout << "Signaling track advance...\n";
-                m_advance_to_next = true;
-            }
+            // Note: Track advancement now happens via audio engine callback
+            // No need to manually set m_advance_to_next here
+            
         } catch (const std::exception& e) {
             std::cerr << "Exception in playback_loop: " << e.what() << std::endl;
         } catch (...) {
@@ -483,6 +528,14 @@ private:
             std::cout << "Waiting for reindexing thread to finish...\n";
             m_reindex_thread.join();
             std::cout << "Reindexing thread finished\n";
+        }
+        
+        // Wait for timeout thread to finish
+        m_timeout_active = false;
+        if (m_timeout_thread.joinable()) {
+            std::cout << "Waiting for timeout thread to finish...\n";
+            m_timeout_thread.join();
+            std::cout << "Timeout thread finished\n";
         }
         
         // Clean up resources

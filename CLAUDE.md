@@ -34,10 +34,16 @@ ctest --test-dir build --verbose
 # Run all unit tests
 ctest --test-dir build
 
+# Run specific test suites
+build\tests\nigamp_tests.exe --gtest_filter="CallbackSimple.*"
+build\tests\nigamp_tests.exe --gtest_filter="SimpleCallback.*"
+
 # Manual test executables
 build\test_hotkey_handler.exe
 build\test_music_player_simulation.exe
-build\nigamp_tests.exe
+
+# Test callback architecture (deadlock-free tests)
+test_fixed_callbacks.bat
 
 # Specific test scripts
 test_hotkeys.bat
@@ -66,11 +72,14 @@ The application follows a dependency injection pattern with interface-based desi
 - Main thread: UI and hotkey handling
 - Playback thread: Audio decoding and DirectSound buffer management  
 - Reindexing thread: Background directory scanning every 10 minutes
+- Timeout thread: Safety fallback for callback-based track advancement (3-second timeout)
 
 ## Key Implementation Details
 
 ### Audio Pipeline
-The audio engine uses DirectSound with circular buffering. Audio data flows: File → Decoder → AudioBuffer → DirectSound buffer. Target latency is <50ms for responsive hotkey control.
+The audio engine uses DirectSound with circular buffering and callback-based completion detection. Audio data flows: File → Decoder → AudioBuffer → DirectSound buffer. Target latency is <50ms for responsive hotkey control.
+
+**Callback Architecture**: Track advancement uses a callback-based system where the audio engine notifies the music player when audio playback actually completes (not just when file decoding finishes). This prevents premature track advancement and includes a 3-second timeout fallback for safety.
 
 ### Hotkey System
 Supports both global hotkeys (Ctrl+Alt+*) and local console hotkeys (Ctrl+*). Uses Windows RegisterHotKey API for global shortcuts.
@@ -85,9 +94,13 @@ Supports MP3 (via minimp3) and WAV (via dr_wav) with automatic format detection.
 
 The codebase uses Google Test with comprehensive unit test coverage:
 - Component isolation through dependency injection
-- Mock implementations for audio and hotkey testing
+- Mock implementations for audio and hotkey testing (deadlock-free mock engines)
 - Separate test executables for interactive components (hotkeys, music simulation)
 - TDD approach with test-first development
+- Callback architecture testing with `CallbackSimple.*` and `SimpleCallback.*` test suites
+- Integration testing with real audio files for end-to-end validation
+
+**Important**: Use `CallbackSimple.*` tests for callback mechanism validation - these avoid mutex deadlocks that can occur in complex mock implementations.
 
 ## Third-Party Dependencies
 
@@ -96,3 +109,25 @@ All dependencies are header-only or statically linked:
 - `dr_wav.h` - WAV decoding (header-only)  
 - Google Test - Unit testing framework (fetched by CMake)
 - Windows APIs - DirectSound, User32 (system libraries)
+
+## Critical Implementation Notes
+
+### Audio Completion Detection
+The audio engine implements a callback-based completion system that distinguishes between:
+- **File decoding completion** (when decoder reaches EOF)  
+- **Audio playback completion** (when audio engine buffers are actually empty)
+
+This prevents the common issue of tracks advancing prematurely before audio finishes playing. The `CompletionCallback` mechanism includes structured error reporting via `CompletionResult` with timing metrics and error codes.
+
+### Threading Safety Patterns
+- Use atomic flags for cross-thread communication (`m_advance_to_next`, `m_should_quit`)
+- Single mutex per component to avoid deadlocks (never nest mutex locks)
+- Callback firing uses atomic exchange patterns to prevent double-execution
+- Timeout threads provide safety fallbacks for callback mechanisms
+
+### Mock Testing Guidelines
+When creating mock implementations for testing:
+- Use atomic variables instead of mutexes where possible
+- Avoid nested lock acquisition in callback paths
+- Use `SimpleMockEngine` pattern for deadlock-free testing
+- Implement completion checking without holding multiple locks simultaneously

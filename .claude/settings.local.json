@@ -9,7 +9,8 @@
       "WebFetch(domain:www.gyan.dev)",
       "Bash(curl:*)",
       "Bash(.build.bat)",
-      "Bash(mingw32-make:*)"
+      "Bash(mingw32-make:*)",
+      "Bash(build.bat)"
     ],
     "deny": []
   }

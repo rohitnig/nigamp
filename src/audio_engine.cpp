@@ -5,6 +5,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <string>
 
 namespace nigamp {
 
@@ -28,6 +29,14 @@ struct DirectSoundEngine::Impl {
     
     AudioBuffer pending_samples;
     size_t write_cursor = 0;
+    
+    // New callback-based completion detection
+    CompletionCallback completion_callback;
+    std::atomic<bool> eof_signaled{false};
+    std::atomic<bool> callback_fired{false};
+    std::mutex callback_mutex;
+    size_t total_samples_processed = 0;
+    std::chrono::steady_clock::time_point start_time;
     
     bool create_window() {
         WNDCLASS wc = {};
@@ -91,6 +100,44 @@ struct DirectSoundEngine::Impl {
         return SUCCEEDED(hr);
     }
     
+    void check_completion() {
+        if (eof_signaled.load() && pending_samples.empty()) {
+            fire_completion_callback(AudioEngineError::SUCCESS);
+        }
+    }
+    
+    void fire_completion_callback(AudioEngineError error_code) {
+        std::lock_guard<std::mutex> lock(callback_mutex);
+        if (!callback_fired.exchange(true) && completion_callback) {
+            try {
+                auto completion_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_time);
+                    
+                CompletionResult result;
+                result.error_code = error_code;
+                result.error_message = get_error_description(error_code);
+                result.completion_time = completion_time;
+                result.samples_processed = total_samples_processed;
+                
+                completion_callback(result);
+            } catch (...) {
+                // Log exception but don't crash audio thread
+            }
+        }
+    }
+    
+    std::string get_error_description(AudioEngineError error_code) {
+        switch (error_code) {
+            case AudioEngineError::SUCCESS: return "Playback completed successfully";
+            case AudioEngineError::CALLBACK_EXCEPTION: return "Exception in completion callback";
+            case AudioEngineError::BUFFER_UNDERRUN: return "Audio buffer underrun occurred";
+            case AudioEngineError::THREADING_ERROR: return "Threading synchronization error";
+            case AudioEngineError::DIRECTSOUND_FAILURE: return "DirectSound operation failed";
+            case AudioEngineError::CALLBACK_TIMEOUT: return "Completion callback timeout";
+            default: return "Unknown error";
+        }
+    }
+    
     void playback_loop() {
         while (!should_stop) {
             if (is_playing && !is_paused) {
@@ -109,6 +156,8 @@ struct DirectSoundEngine::Impl {
         
         std::lock_guard<std::mutex> lock(buffer_mutex);
         if (pending_samples.empty()) {
+            // Check for completion when buffers are empty
+            check_completion();
             return;
         }
         
@@ -149,8 +198,11 @@ struct DirectSoundEngine::Impl {
         
         secondary_buffer->Unlock(audio_ptr1, audio_bytes1, audio_ptr2, audio_bytes2);
         
+        size_t samples_written = (audio_bytes1 + audio_bytes2) / sizeof(int16_t);
+        total_samples_processed += samples_written;
+        
         pending_samples.erase(pending_samples.begin(), 
-                            pending_samples.begin() + (audio_bytes1 + audio_bytes2) / sizeof(int16_t));
+                            pending_samples.begin() + samples_written);
         
         write_cursor = (write_cursor + bytes_to_write) % buffer_bytes;
     }
@@ -196,6 +248,12 @@ bool DirectSoundEngine::start() {
         return false;
     }
     
+    // Reset state for new playback
+    m_impl->eof_signaled = false;
+    m_impl->callback_fired = false;
+    m_impl->total_samples_processed = 0;
+    m_impl->start_time = std::chrono::steady_clock::now();
+    
     m_impl->is_playing = true;
     m_impl->should_stop = false;
     m_impl->playback_thread = std::thread(&Impl::playback_loop, m_impl.get());
@@ -215,6 +273,12 @@ bool DirectSoundEngine::stop() {
     {
         std::lock_guard<std::mutex> lock(m_impl->buffer_mutex);
         m_impl->pending_samples.clear();
+    }
+    
+    // Clear callback to prevent firing during shutdown
+    {
+        std::lock_guard<std::mutex> lock(m_impl->callback_mutex);
+        m_impl->completion_callback = nullptr;
     }
     
     if (m_impl->playback_thread.joinable()) {
@@ -291,6 +355,24 @@ void DirectSoundEngine::set_volume(float volume) {
 
 float DirectSoundEngine::get_volume() const {
     return m_impl->volume;
+}
+
+void DirectSoundEngine::set_completion_callback(CompletionCallback callback) {
+    std::lock_guard<std::mutex> lock(m_impl->callback_mutex);
+    m_impl->completion_callback = callback;
+}
+
+void DirectSoundEngine::signal_eof() {
+    m_impl->eof_signaled = true;
+    
+    // Check completion immediately in case buffers are already empty
+    std::lock_guard<std::mutex> lock(m_impl->buffer_mutex);
+    m_impl->check_completion();
+}
+
+size_t DirectSoundEngine::get_buffered_samples() const {
+    std::lock_guard<std::mutex> lock(m_impl->buffer_mutex);
+    return m_impl->pending_samples.size();
 }
 
 std::unique_ptr<IAudioEngine> create_audio_engine() {
