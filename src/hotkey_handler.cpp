@@ -44,26 +44,19 @@ struct WindowsHotkeyHandler::Impl {
     static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         // Log all messages for debugging (can be disabled later)
         if (msg == WM_HOTKEY) {
-            std::cout << "[HOTKEY DEBUG] WM_HOTKEY message received!" << std::endl;
-            std::cout << "[HOTKEY DEBUG] Hotkey ID: " << static_cast<int>(wparam) << std::endl;
-            std::cout << "[HOTKEY DEBUG] Modifiers: " << LOWORD(lparam) << ", VirtualKey: " << HIWORD(lparam) << std::endl;
             
             WindowsHotkeyHandler::Impl* impl = 
                 reinterpret_cast<WindowsHotkeyHandler::Impl*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
             
             if (!impl) {
-                std::cout << "[HOTKEY DEBUG] ERROR: No impl pointer found!" << std::endl;
                 return 0;
             }
             
             if (!impl->callback) {
-                std::cout << "[HOTKEY DEBUG] ERROR: No callback set!" << std::endl;
                 return 0;
             }
             
-            std::cout << "[HOTKEY DEBUG] Calling handle_hotkey..." << std::endl;
             impl->handle_hotkey(static_cast<int>(wparam));
-            std::cout << "[HOTKEY DEBUG] handle_hotkey completed" << std::endl;
             return 0;
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);
@@ -71,101 +64,68 @@ struct WindowsHotkeyHandler::Impl {
     
     
     void handle_hotkey(int hotkey_id) {
-        std::cout << "[HOTKEY DEBUG] handle_hotkey called with ID: " << hotkey_id << std::endl;
-        
         switch (hotkey_id) {
             case HOTKEY_NEXT:
-                std::cout << "[HOTKEY DEBUG] Triggering NEXT_TRACK action" << std::endl;
                 callback(HotkeyAction::NEXT_TRACK);
                 break;
             case HOTKEY_PREV:
-                std::cout << "[HOTKEY DEBUG] Triggering PREVIOUS_TRACK action" << std::endl;
                 callback(HotkeyAction::PREVIOUS_TRACK);
                 break;
             case HOTKEY_PAUSE:
-                std::cout << "[HOTKEY DEBUG] Triggering PAUSE_RESUME action" << std::endl;
                 callback(HotkeyAction::PAUSE_RESUME);
                 break;
             case HOTKEY_VOLUME_UP:
-                std::cout << "[HOTKEY DEBUG] Triggering VOLUME_UP action" << std::endl;
                 callback(HotkeyAction::VOLUME_UP);
                 break;
             case HOTKEY_VOLUME_DOWN:
-                std::cout << "[HOTKEY DEBUG] Triggering VOLUME_DOWN action" << std::endl;
                 callback(HotkeyAction::VOLUME_DOWN);
                 break;
             case HOTKEY_QUIT:
-                std::cout << "[HOTKEY DEBUG] Triggering QUIT action" << std::endl;
                 callback(HotkeyAction::QUIT);
                 break;
-            default:
-                std::cout << "[HOTKEY DEBUG] ERROR: Unknown hotkey ID: " << hotkey_id << std::endl;
-                break;
         }
-        
-        std::cout << "[HOTKEY DEBUG] handle_hotkey finished" << std::endl;
     }
     
     void message_loop() {
-        std::cout << "[HOTKEY DEBUG] Message loop thread started" << std::endl;
         MSG msg;
-        int heartbeat_counter = 0;
         
         while (!should_stop) {
             BOOL result = PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE);
             if (result > 0) {
-                std::cout << "[HOTKEY DEBUG] Message received: " << msg.message << std::endl;
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                
-                // Heartbeat every 10 seconds
-                heartbeat_counter++;
-                if (heartbeat_counter >= 1000) { // 10ms * 1000 = 10 seconds
-                    std::cout << "[HOTKEY DEBUG] Message loop heartbeat (waiting for hotkeys...)" << std::endl;
-                    heartbeat_counter = 0;
-                }
             }
         }
-        
-        std::cout << "[HOTKEY DEBUG] Message loop thread stopped" << std::endl;
     }
     
     void console_input_loop() {
-        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread started" << std::endl;
-        
         while (!should_stop) {
             // Check if Ctrl is pressed
             if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
                 // Check for local hotkey combinations
                 if (GetAsyncKeyState('N') & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering NEXT_TRACK (Ctrl+N)" << std::endl;
                     if (callback) callback(HotkeyAction::NEXT_TRACK);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Prevent rapid repeats
                 }
                 else if (GetAsyncKeyState('P') & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering PREVIOUS_TRACK (Ctrl+P)" << std::endl;
                     if (callback) callback(HotkeyAction::PREVIOUS_TRACK);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
                 else if (GetAsyncKeyState('R') & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering PAUSE_RESUME (Ctrl+R)" << std::endl;
                     if (callback) callback(HotkeyAction::PAUSE_RESUME);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
                 else if (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering VOLUME_UP (Ctrl+Plus)" << std::endl;
                     if (callback) callback(HotkeyAction::VOLUME_UP);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
                 else if (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering VOLUME_DOWN (Ctrl+Minus)" << std::endl;
                     if (callback) callback(HotkeyAction::VOLUME_DOWN);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
                 else if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
-                    std::cout << "[LOCAL HOTKEY DEBUG] Triggering QUIT (Ctrl+Escape)" << std::endl;
                     if (callback) callback(HotkeyAction::QUIT);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
@@ -173,8 +133,6 @@ struct WindowsHotkeyHandler::Impl {
             
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        
-        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread stopped" << std::endl;
     }
 };
 
@@ -211,19 +169,13 @@ void WindowsHotkeyHandler::set_callback(HotkeyCallback callback) {
 }
 
 bool WindowsHotkeyHandler::register_hotkeys() {
-    std::cout << "[HOTKEY DEBUG] Starting hotkey registration..." << std::endl;
-    
     if (!m_impl->window_handle) {
         std::cerr << "Cannot register hotkeys: Window handle not created\n";
         return false;
     }
-    
-    std::cout << "[HOTKEY DEBUG] Window handle valid: " << m_impl->window_handle << std::endl;
     bool success = true;
     
     auto register_hotkey_with_error = [&](int id, UINT modifiers, UINT vk, const char* name) {
-        std::cout << "[HOTKEY DEBUG] Registering " << name << " (ID:" << id << ", Mod:" << modifiers << ", VK:" << vk << ")" << std::endl;
-        
         if (!RegisterHotKey(m_impl->window_handle, id, modifiers, vk)) {
             DWORD error = GetLastError();
             std::cerr << "Failed to register " << name << " hotkey (error: " << error;
@@ -244,8 +196,6 @@ bool WindowsHotkeyHandler::register_hotkeys() {
             }
             std::cerr << ")\n";
             success = false;
-        } else {
-            std::cout << "[HOTKEY DEBUG] Successfully registered " << name << std::endl;
         }
     };
     
@@ -278,27 +228,15 @@ void WindowsHotkeyHandler::unregister_hotkeys() {
 }
 
 void WindowsHotkeyHandler::process_messages() {
-    std::cout << "[HOTKEY DEBUG] process_messages() called" << std::endl;
-    
     if (!m_impl->message_thread.joinable()) {
-        std::cout << "[HOTKEY DEBUG] Starting message thread..." << std::endl;
         m_impl->should_stop = false;
         m_impl->message_thread = std::thread(&Impl::message_loop, m_impl.get());
-        
-        // Give the thread a moment to start
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::cout << "[HOTKEY DEBUG] Message thread should be running now" << std::endl;
-    } else {
-        std::cout << "[HOTKEY DEBUG] Message thread already running" << std::endl;
     }
     
     if (!m_impl->console_input_thread.joinable()) {
-        std::cout << "[LOCAL HOTKEY DEBUG] Starting console input thread..." << std::endl;
         m_impl->console_input_thread = std::thread(&Impl::console_input_loop, m_impl.get());
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread should be running now" << std::endl;
-    } else {
-        std::cout << "[LOCAL HOTKEY DEBUG] Console input thread already running" << std::endl;
     }
 }
 

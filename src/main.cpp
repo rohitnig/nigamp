@@ -171,36 +171,26 @@ public:
     
 private:
     void handle_hotkey(HotkeyAction action) {
-        std::cout << "[HOTKEY DEBUG] Main application handle_hotkey called with action: " << static_cast<int>(action) << std::endl;
-        
         switch (action) {
             case HotkeyAction::NEXT_TRACK:
-                std::cout << "[HOTKEY DEBUG] Executing next_track()" << std::endl;
                 next_track();
                 break;
             case HotkeyAction::PREVIOUS_TRACK:
-                std::cout << "[HOTKEY DEBUG] Executing previous_track()" << std::endl;
                 previous_track();
                 break;
             case HotkeyAction::PAUSE_RESUME:
-                std::cout << "[HOTKEY DEBUG] Executing toggle_pause()" << std::endl;
                 toggle_pause();
                 break;
             case HotkeyAction::VOLUME_UP:
-                std::cout << "[HOTKEY DEBUG] Executing adjust_volume(+0.1)" << std::endl;
                 adjust_volume(0.1f);
                 break;
             case HotkeyAction::VOLUME_DOWN:
-                std::cout << "[HOTKEY DEBUG] Executing adjust_volume(-0.1)" << std::endl;
                 adjust_volume(-0.1f);
                 break;
             case HotkeyAction::QUIT:
-                std::cout << "[HOTKEY DEBUG] Executing quit()" << std::endl;
                 quit();
                 break;
         }
-        
-        std::cout << "[HOTKEY DEBUG] Main application handle_hotkey completed" << std::endl;
     }
     
     void handle_track_advance() {
