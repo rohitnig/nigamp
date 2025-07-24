@@ -78,7 +78,7 @@ public:
     
 private:
     void check_completion() {
-        std::lock_guard<std::mutex> buffer_lock(m_buffer_mutex);
+        // Note: Caller must already hold m_buffer_mutex
         if (m_eof_signaled.load() && m_pending_samples.empty()) {
             fire_completion_callback();
         }
@@ -96,7 +96,15 @@ private:
             result.completion_time = completion_time;
             result.samples_processed = m_total_samples_processed;
             
-            m_completion_callback(result);
+            try {
+                m_completion_callback(result);
+            } catch (const std::exception& e) {
+                // Swallow callback exceptions for safety - this is what a real audio engine should do
+                std::cerr << "Warning: Callback threw exception: " << e.what() << std::endl;
+            } catch (...) {
+                // Catch all other exceptions
+                std::cerr << "Warning: Callback threw unknown exception" << std::endl;
+            }
         }
     }
 };

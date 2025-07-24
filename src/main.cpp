@@ -50,7 +50,7 @@ private:
     std::mutex m_playlist_mutex;
     
     const Song* m_current_song = nullptr;
-    float m_volume = 0.8f;
+    float m_volume = DEFAULT_VOLUME;
     bool m_preview_mode = false;
     
     // Safety timeout mechanism
@@ -62,6 +62,11 @@ private:
     std::chrono::steady_clock::time_point m_playback_start_time;
     double m_current_song_duration = 0.0;
     bool m_use_duration_based_completion = true;
+    
+    // Constants
+    static constexpr double DEFAULT_VOLUME = 0.8;
+    static constexpr int COUNTDOWN_UPDATE_INTERVAL_MS = 500;
+    static constexpr int PREVIEW_DURATION_SECONDS = 10;
     
     // Reindexing properties
     std::string m_current_directory = ".";
@@ -215,6 +220,7 @@ private:
             if (m_timeout_active.load()) {
                 std::cerr << "Warning: Audio completion callback timeout after " 
                           << COMPLETION_TIMEOUT_SECONDS << " seconds. Forcing track advance.\n";
+                DEBUG_LOG("*** TIMEOUT THREAD setting m_advance_to_next=true");
                 m_advance_to_next = true;
                 m_timeout_active = false;
             }
@@ -222,6 +228,8 @@ private:
     }
     
     void handle_playback_completion(const CompletionResult& result) {
+        DEBUG_LOG("*** COMPLETION CALLBACK fired for song: " << (m_current_song ? m_current_song->title : "Unknown"));
+        
         // Cancel timeout since callback fired successfully
         m_timeout_active = false;
         
@@ -233,10 +241,18 @@ private:
         }
         
         // Signal track advancement
+        DEBUG_LOG("*** COMPLETION CALLBACK setting m_advance_to_next=true");
         m_advance_to_next = true;
     }
     
     void handle_hotkey(HotkeyAction action) {
+        // Use a thread-safe queue to pass hotkey actions to the main thread
+        // This ensures that all hotkey actions are processed in the main thread
+        // and avoids any potential race conditions.
+        
+        // For now, we'll just process the hotkey directly, but in a more complex
+        // application, a thread-safe queue would be a better approach.
+        
         switch (action) {
             case HotkeyAction::NEXT_TRACK:
                 next_track();
@@ -275,17 +291,19 @@ private:
     }
     
     void next_track() {
-        std::cout << "Attempting to have a mutex lock for next_track()" << std::endl;
+        DEBUG_LOG("*** NEXT_TRACK called - manual user hotkey");
+        DEBUG_LOG("Attempting to have a mutex lock for next_track()");
         std::lock_guard<std::mutex> lock(m_playlist_mutex);
-        std::cout << "Mutex lock acquired for next_track()" << std::endl;
+        DEBUG_LOG("Mutex lock acquired for next_track()");
         
         const Song* next_song = m_playlist->next();
         if (next_song) {
+            DEBUG_LOG("*** NEXT_TRACK stopping current song and playing: " << next_song->title);
             stop_current_song();
-            std::cout << "[DEBUG] next_track() stopping current song" << std::endl;
-            std::cout << "[DEBUG] next_track() setting current song to next song" << std::endl;
-            std::cout << "[DEBUG] next_track() calling play_current_song()" << std::endl;
-            std::cout << "Now playing: " << next_song->title << "\n";
+            DEBUG_LOG("next_track() stopping current song");
+            DEBUG_LOG("next_track() setting current song to next song");
+            DEBUG_LOG("next_track() calling play_current_song()");
+            INFO_LOG("Now playing: " << next_song->title);
             m_current_song = next_song;
             play_current_song();
         }
@@ -371,14 +389,37 @@ private:
             return;
         }
         
-        // Record playback start time for duration-based completion
-        m_playback_start_time = std::chrono::steady_clock::now();
+        // Note: m_playback_start_time will be set inside playback_loop when it actually starts
         
         m_playback_thread = std::thread(&MusicPlayer::playback_loop, this);
     }
     
     void stop_current_song() {
-        DEBUG_LOG("Stopping current song: " << (m_current_song ? m_current_song->title : "None"));
+        DEBUG_LOG("*** STOP_CURRENT_SONG called for: " << (m_current_song ? m_current_song->title : "None"));
+        
+        // Cancel any active timeout thread and reset advancement flags
+        DEBUG_LOG("*** Setting m_timeout_active=false, m_advance_to_next=false");
+        m_timeout_active = false;
+        m_advance_to_next = false;
+        
+        // Reset playback state controllers (but preserve pause state)
+        m_current_song_duration = 0.0;
+        // Note: m_playback_start_time will be reset in play_current_song()
+        // Note: m_is_paused is preserved so next song respects current pause state
+        
+        // Clear audio engine completion callback to prevent stale callbacks
+        if (m_audio_engine) {
+            DEBUG_LOG("*** Clearing audio engine completion callback");
+            m_audio_engine->set_completion_callback(nullptr);
+        }
+        
+        // Wait for timeout thread to finish if it's running
+        if (m_timeout_thread.joinable()) {
+            DEBUG_LOG("Waiting for timeout thread to finish...");
+            m_timeout_thread.join();
+            DEBUG_LOG("Timeout thread finished");
+        }
+        
         // Signal playback thread to stop if it's running
         if (m_playback_thread.joinable()) {
             std::cout << "Stopping playback thread...\n";
@@ -413,11 +454,14 @@ private:
             size_t buffer_size = m_audio_engine->get_buffer_size();
             
             auto start_time = std::chrono::steady_clock::now();
-            const auto preview_duration = std::chrono::seconds(10);
+            const auto preview_duration = std::chrono::seconds(PREVIEW_DURATION_SECONDS);
+            
+            // Set playback start time NOW when playback actually begins
+            m_playback_start_time = std::chrono::steady_clock::now();
             
             bool preview_completed = false;
             auto last_display_update = std::chrono::steady_clock::now();
-            const auto display_update_interval = std::chrono::milliseconds(500); // Update every 500ms
+            const auto display_update_interval = std::chrono::milliseconds(COUNTDOWN_UPDATE_INTERVAL_MS);
             
             while (!m_stop_playback && !m_should_quit && m_current_decoder) {
                 // Check song duration completion (ignore decoder EOF)
@@ -454,11 +498,11 @@ private:
                     auto now = std::chrono::steady_clock::now();
                     if (now - last_display_update >= display_update_interval) {
                         double preview_elapsed = std::chrono::duration<double>(elapsed).count();
-                        double preview_remaining = 10.0 - preview_elapsed;
+                        double preview_remaining = PREVIEW_DURATION_SECONDS - preview_elapsed;
                         if (preview_remaining > 0) {
                             std::cout << "\r🎵 [PREVIEW] " << (m_current_song ? m_current_song->title : "Unknown") 
                                       << " - Time remaining: " << format_time(preview_remaining)
-                                      << " / " << format_time(10.0) << std::flush;
+                                      << " / " << format_time(PREVIEW_DURATION_SECONDS) << std::flush;
                         }
                         last_display_update = now;
                     }
@@ -499,14 +543,18 @@ private:
                 m_audio_engine->signal_eof();
                 
                 // For duration-based completion, immediately advance to next track
-                if (m_use_duration_based_completion) {
+                // BUT only if we're not already stopping due to manual track change
+                if (m_use_duration_based_completion && !m_stop_playback.load()) {
                     // Give audio engine brief moment to process, then advance
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    DEBUG_LOG("*** PLAYBACK LOOP setting m_advance_to_next=true (duration-based)");
                     m_advance_to_next = true;
-                } else {
-                    // Use traditional timeout mechanism for other cases
+                } else if (!m_stop_playback.load()) {
+                    // Use traditional timeout mechanism only if not manually stopping
+                    DEBUG_LOG("*** PLAYBACK LOOP starting completion timeout");
                     start_completion_timeout();
                 }
+                // If m_stop_playback is true, don't start any completion mechanism
             }
             
             // Note: Track advancement now happens via audio engine callback

@@ -18,8 +18,8 @@ set(TEST_SOURCES
     test_file_scanner.cpp
     test_decoder.cpp
     test_audio_engine.cpp
-    test_simple_callback.cpp
     test_callback_simple.cpp
+    test_callback_architecture.cpp
 )
 
 # Standalone hotkey test (separate executable)

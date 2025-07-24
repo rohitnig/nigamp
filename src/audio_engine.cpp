@@ -6,6 +6,7 @@
 #include <mutex>
 #include <algorithm>
 #include <string>
+#include <iostream>
 
 namespace nigamp {
 
@@ -145,6 +146,7 @@ struct DirectSoundEngine::Impl {
     void fire_completion_callback(AudioEngineError error_code) {
         std::lock_guard<std::mutex> lock(callback_mutex);
         if (!callback_fired.exchange(true) && completion_callback) {
+            std::cout << "[DEBUG] Firing completion callback" << std::endl;
             try {
                 auto completion_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start_time);
@@ -285,6 +287,7 @@ bool DirectSoundEngine::initialize(const AudioFormat& format) {
 }
 
 bool DirectSoundEngine::start() {
+    std::cout << "[DEBUG] AudioEngine::start()" << std::endl;
     if (!m_impl->secondary_buffer) {
         return false;
     }
@@ -308,6 +311,7 @@ bool DirectSoundEngine::start() {
 }
 
 bool DirectSoundEngine::stop() {
+    std::cout << "[DEBUG] AudioEngine::stop()" << std::endl;
     if (!m_impl->secondary_buffer) {
         return false;
     }
@@ -343,11 +347,13 @@ bool DirectSoundEngine::stop() {
 }
 
 bool DirectSoundEngine::pause() {
+    std::cout << "[DEBUG] AudioEngine::pause()" << std::endl;
     m_impl->is_paused = true;
     return true;
 }
 
 bool DirectSoundEngine::resume() {
+    std::cout << "[DEBUG] AudioEngine::resume()" << std::endl;
     m_impl->is_paused = false;
     return true;
 }

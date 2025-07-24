@@ -44,6 +44,7 @@ struct WindowsHotkeyHandler::Impl {
     static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         // Log all messages for debugging (can be disabled later)
         if (msg == WM_HOTKEY) {
+            // WM_HOTKEY message received
             
             WindowsHotkeyHandler::Impl* impl = 
                 reinterpret_cast<WindowsHotkeyHandler::Impl*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
@@ -64,6 +65,7 @@ struct WindowsHotkeyHandler::Impl {
     
     
     void handle_hotkey(int hotkey_id) {
+        // Handle hotkey action
         switch (hotkey_id) {
             case HOTKEY_NEXT:
                 callback(HotkeyAction::NEXT_TRACK);

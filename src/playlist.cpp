@@ -4,6 +4,13 @@
 #include <chrono>
 #include <iostream>
 
+// Debug logging macros
+#ifdef DEBUG
+    #define DEBUG_LOG(msg) std::cout << "[DEBUG] " << msg << std::endl
+#else
+    #define DEBUG_LOG(msg) do {} while(0)
+#endif
+
 namespace nigamp {
 
 ShufflePlaylist::ShufflePlaylist() 
@@ -55,17 +62,17 @@ const Song* ShufflePlaylist::next() {
     const auto& playlist = m_is_shuffled ? m_shuffled_songs : m_songs;
     
     if (m_current_index + 1 < playlist.size()) {
-        std::cout << "[DEBUG] next() current index: " << m_current_index << std::endl;
-        std::cout << "[DEBUG] next() playlist size: " << playlist.size() << std::endl;
+        DEBUG_LOG("next() current index: " << m_current_index);
+        DEBUG_LOG("next() playlist size: " << playlist.size());
         ++m_current_index;
         return &playlist[m_current_index];
     } else if (playlist.size() == 1) {
-        std::cout << "[DEBUG] next() single song, returning same song" << std::endl;
+        DEBUG_LOG("next() single song, returning same song");
         // For single song, restart the same song
         return &playlist[m_current_index];
     } else {
         // Loop back to first song
-        std::cout << "[DEBUG] next() looping to first song" << std::endl;
+        DEBUG_LOG("next() looping to first song");
         m_current_index = 0;
         return &playlist[m_current_index];
     }

@@ -112,7 +112,7 @@ bool Mp3Decoder::open(const std::string& file_path) {
     // Reset decoder for actual playback
     mp3dec_init(&m_impl->mp3d);
     
-    std::cout << "Opened MP3: " << info.hz << "Hz, " << info.channels << " channels\n";
+    // MP3 successfully opened - info available in format
     
     return true;
 }
