@@ -11,15 +11,19 @@ This is a C++ project using CMake and MinGW on Windows. The project targets <10M
 - CMake 3.16 or higher
 - Git (for Google Test)
 - dr_wav.h (downloaded automatically by `copy_drwav.bat`)
-- libmpg123 (manual download required)
+- minimp3.h (header-only, included in repository)
 
 ### Build Commands
-```bash
+```powershell
 # Setup dependencies (run once)
-setup_libraries.bat
+.\setup_libraries.bat
 
-# Standard build
-build.bat
+# Standard build (with optional test prompt)
+.\build.bat
+
+# Debug build (enables DEBUG_LOG output)
+cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-DDEBUG"
+cmake --build build
 
 # Manual CMake build
 cmake -B build -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER=C:/mingw64/bin/g++.exe
@@ -30,24 +34,24 @@ ctest --test-dir build --verbose
 ```
 
 ### Test Commands
-```bash
+```powershell
 # Run all unit tests
-ctest --test-dir build
+ctest --test-dir build --verbose
 
 # Run specific test suites
-build\tests\nigamp_tests.exe --gtest_filter="CallbackSimple.*"
-build\tests\nigamp_tests.exe --gtest_filter="SimpleCallback.*"
+.\build\tests\nigamp_tests.exe --gtest_filter="CallbackSimple.*"
+.\build\tests\nigamp_tests.exe --gtest_filter="SimpleCallback.*"
 
 # Manual test executables
-build\test_hotkey_handler.exe
-build\test_music_player_simulation.exe
+.\build\test_hotkey_handler.exe
+.\build\test_music_player_simulation.exe
 
 # Test callback architecture (deadlock-free tests)
-test_fixed_callbacks.bat
+.\test_fixed_callbacks.bat
 
 # Specific test scripts
-test_hotkeys.bat
-test_music_simulation.bat
+.\test_hotkeys.bat
+.\test_music_simulation.bat
 ```
 
 ## Architecture Overview
@@ -55,12 +59,12 @@ test_music_simulation.bat
 The application follows a dependency injection pattern with interface-based design for testability:
 
 ### Core Components
-- **AudioEngine** (`audio_engine.hpp/cpp`) - DirectSound-based audio output with ~50ms latency target
-- **Decoder** (`mp3_decoder.hpp/cpp`) - Pluggable MP3/WAV decoder using minimp3 and dr_wav  
-- **Playlist** (`playlist.hpp/cpp`) - Fisher-Yates shuffle algorithm with bidirectional navigation
-- **HotkeyHandler** (`hotkey_handler.hpp/cpp`) - Windows global hotkey system using RegisterHotKey API
-- **FileScanner** (`file_scanner.hpp/cpp`) - Directory scanning with MP3/WAV format detection
-- **MusicPlayer** (`main.cpp`) - Main application orchestrating all components
+- **AudioEngine** (`include\\audio_engine.hpp`, `src\\audio_engine.cpp`) - DirectSound-based audio output with ~50ms latency target
+- **Decoder** (`include\\mp3_decoder.hpp`, `src\\mp3_decoder.cpp`) - Pluggable MP3/WAV decoder using minimp3 and dr_wav  
+- **Playlist** (`include\\playlist.hpp`, `src\\playlist.cpp`) - Fisher-Yates shuffle algorithm with bidirectional navigation
+- **HotkeyHandler** (`include\\hotkey_handler.hpp`, `src\\hotkey_handler.cpp`) - Windows global hotkey system using RegisterHotKey API
+- **FileScanner** (`include\\file_scanner.hpp`, `src\\file_scanner.cpp`) - Directory scanning with MP3/WAV format detection
+- **MusicPlayer** (`src\\main.cpp`) - Main application orchestrating all components
 
 ### Design Patterns
 - **RAII**: All components use proper resource management
@@ -69,17 +73,36 @@ The application follows a dependency injection pattern with interface-based desi
 - **Streaming Architecture**: Minimal memory allocations, audio data streamed in chunks
 
 ### Threading Model
-- Main thread: UI and hotkey handling
-- Playback thread: Audio decoding and DirectSound buffer management  
+- Main thread: UI updates and hotkey handling
+- Playback thread: Duration tracking, countdown display, and audio streaming
+- Audio engine thread: DirectSound buffer management and callback firing
+- Timeout thread: Safety fallback for callback-based completion (3-second timeout)
 - Reindexing thread: Background directory scanning every 10 minutes
-- Timeout thread: Safety fallback for callback-based track advancement (3-second timeout)
 
 ## Key Implementation Details
 
-### Audio Pipeline
-The audio engine uses DirectSound with circular buffering and callback-based completion detection. Audio data flows: File → Decoder → AudioBuffer → DirectSound buffer. Target latency is <50ms for responsive hotkey control.
+### Duration-Based Completion System
+The application uses a sophisticated duration-based completion system that solves the classic audio player problem of premature track advancement:
 
-**Callback Architecture**: Track advancement uses a callback-based system where the audio engine notifies the music player when audio playback actually completes (not just when file decoding finishes). This prevents premature track advancement and includes a 3-second timeout fallback for safety.
+- **Duration Tracking**: Uses `IAudioDecoder::get_duration()` to get exact song length
+- **Precise Timing**: Tracks `m_playback_start_time` and calculates elapsed vs. total duration
+- **Smart Completion**: Continues until full song duration is reached, even after decoder EOF
+- **Silence Padding**: Fills audio buffers with silence after decoder EOF to maintain timing accuracy
+
+**Key Advantage**: Tracks advance exactly when songs finish playing, not when file decoding completes.
+
+### Live Countdown Display
+Real-time visual feedback system that updates on the same console line:
+
+- **Dynamic Updates**: Refreshes every 500ms using carriage return (`\r`) for in-place updates
+- **Time Formatting**: Displays `MM:SS` format with remaining/total time
+- **Status Indicators**: Shows 🎵 for playing, ⏸️ [PAUSED] for paused, [PREVIEW] for preview mode
+- **Clean Completion**: Automatically clears countdown line when songs finish
+
+### Audio Pipeline
+The audio engine uses DirectSound with circular buffering and dual completion detection. Audio data flows: File → Decoder → AudioBuffer → DirectSound buffer. Target latency is <50ms for responsive hotkey control.
+
+**Dual Completion Detection**: Uses both DirectSound buffer position checking AND duration-based timing for bulletproof completion detection with 3-second timeout fallback.
 
 ### Hotkey System
 Supports both global hotkeys (Ctrl+Alt+*) and local console hotkeys (Ctrl+*). Uses Windows RegisterHotKey API for global shortcuts.
@@ -110,14 +133,87 @@ All dependencies are header-only or statically linked:
 - Google Test - Unit testing framework (fetched by CMake)
 - Windows APIs - DirectSound, User32 (system libraries)
 
+## Command Line Usage
+
+### Basic Usage Patterns
+```powershell
+# Basic usage - scans C:\Music directory
+.\\build\\nigamp.exe
+
+# Play specific file
+.\\build\\nigamp.exe --file song.mp3
+.\\build\\nigamp.exe -f "C:\\Music\\My Song.mp3"
+
+# Play all files from directory  
+.\\build\\nigamp.exe --folder "C:\\Music"
+.\\build\\nigamp.exe -d "C:\\My Music Collection"
+
+# Preview mode - play first 10 seconds of each song
+.\\build\\nigamp.exe --preview
+.\\build\\nigamp.exe -p
+
+# Combine options
+.\\build\\nigamp.exe -f song.mp3 -p    # Preview single file
+.\\build\\nigamp.exe -d "C:\\Music" -p  # Preview entire directory
+
+# Help
+.\\build\\nigamp.exe --help
+```
+
+### Global Hotkeys (Work Anywhere)
+- **Ctrl+Alt+N**: Next track
+- **Ctrl+Alt+P**: Previous track  
+- **Ctrl+Alt+R**: Pause/Resume
+- **Ctrl+Alt+Plus**: Volume up
+- **Ctrl+Alt+Minus**: Volume down
+- **Ctrl+Alt+Escape**: Quit
+
+### Local Hotkeys (Console Focused)
+- **Ctrl+N**: Next track
+- **Ctrl+P**: Previous track
+- **Ctrl+R**: Pause/Resume
+- **Ctrl+Plus**: Volume up
+- **Ctrl+Minus**: Volume down
+- **Ctrl+Escape**: Quit
+
+## VSCode Integration
+
+The project includes full VSCode integration:
+- IntelliSense configuration via `.vscode\\c_cpp_properties.json`
+- Build and debug tasks in `.vscode\\tasks.json`
+- CMake integration with configured settings
+- Test runner configuration for unit tests
+
+## Debug Logging System
+
+The codebase includes a structured logging framework with conditional compilation:
+
+```cpp
+#define DEBUG_LOG(msg)  // Only active when compiled with -DDEBUG
+#define INFO_LOG(msg)   // General information output
+#define ERROR_LOG(msg)  // Error messages to stderr
+```
+
+- **Release Mode**: Only `INFO_LOG` and `ERROR_LOG` messages appear
+- **Debug Mode**: All logging levels active for detailed debugging
+- **Performance**: Zero overhead in release builds via macro elimination
+
 ## Critical Implementation Notes
 
-### Audio Completion Detection
-The audio engine implements a callback-based completion system that distinguishes between:
-- **File decoding completion** (when decoder reaches EOF)  
-- **Audio playback completion** (when audio engine buffers are actually empty)
+### Duration-Based vs EOF-Based Completion
+The system now prioritizes duration-based completion over decoder EOF detection:
 
-This prevents the common issue of tracks advancing prematurely before audio finishes playing. The `CompletionCallback` mechanism includes structured error reporting via `CompletionResult` with timing metrics and error codes.
+- **Problem Solved**: Eliminates premature track advancement when file decoding finishes before audio playback
+- **Implementation**: Continues playback with silence padding until `elapsed_seconds >= song_duration`
+- **User Experience**: Natural track transitions that match actual audio completion
+- **Fallback Safety**: 3-second timeout prevents infinite loops if duration detection fails
+
+### Enhanced Callback Architecture
+The `CompletionCallback` mechanism includes dual verification methods:
+- **DirectSound Buffer Position**: Checks if hardware play cursor has caught up to write position
+- **Time-Based Completion**: Calculates remaining playback time based on buffer size and sample rate
+- **Structured Results**: `CompletionResult` provides detailed completion information with timing metrics
+- **Error Handling**: Comprehensive error codes with descriptive messages
 
 ### Threading Safety Patterns
 - Use atomic flags for cross-thread communication (`m_advance_to_next`, `m_should_quit`)
@@ -131,3 +227,10 @@ When creating mock implementations for testing:
 - Avoid nested lock acquisition in callback paths
 - Use `SimpleMockEngine` pattern for deadlock-free testing
 - Implement completion checking without holding multiple locks simultaneously
+- Test duration-based completion with `CallbackSimple.*` test suites specifically designed to avoid deadlocks
+
+### Development Workflow Notes
+- **Duration Testing**: Use short test audio files (1-2 seconds) to verify completion timing
+- **Countdown Display**: Test with both normal and preview modes to ensure proper formatting
+- **Debug Output**: Enable DEBUG_LOG during development to trace timing and completion logic
+- **Thread Safety**: Pay special attention to duration tracking variables in multi-threaded contexts

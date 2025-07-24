@@ -7,26 +7,31 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 ### Core Capabilities
 - **Ultra-lightweight**: <10MB RAM usage target with streaming audio architecture
 - **High-quality audio**: DirectSound-based audio engine with ~50ms latency for responsive control
+- **Duration-based completion**: Precise track advancement based on actual song duration, not file read completion
+- **Live countdown display**: Real-time countdown showing remaining time on the same console line
 - **Instant track transitions**: Zero-lag switching between songs when using hotkeys
 - **Smart playlist management**: Fisher-Yates shuffle algorithm for truly random playback
 - **Multi-format support**: MP3 (via minimp3) and WAV (via dr_wav) with automatic format detection
 - **Background directory monitoring**: Automatic playlist updates every 10 minutes
 - **Preview mode**: Play only first 10 seconds of each song for quick browsing
 - **Volume boost**: Built-in 50% volume enhancement for better audio quality
-- **TDD-tested**: Comprehensive unit test coverage with dependency injection
 - **Zero dependencies**: Single executable with static linking
 
 ### Playback Features
 - **Continuous playback**: Seamless progression through entire playlist
 - **Bidirectional navigation**: Move forward and backward through tracks
-- **Auto-advancement**: Songs automatically advance when completed
+- **Precision timing**: Songs advance exactly when audio playback completes, not when file decoding finishes
+- **Smart completion**: Continues playing until full song duration is reached, padding with silence if needed
+- **Pause/Resume**: Maintains accurate timing and countdown display even when paused
 - **Smooth transitions**: No gaps or delays between track changes
 - **Thread-safe operation**: Concurrent audio processing with UI responsiveness
 
 ### User Interface
 - **Global hotkeys**: Control playback from anywhere in Windows (works when console not focused)
 - **Local hotkeys**: Additional controls when console window is active
-- **Real-time feedback**: Console output showing current track, volume, and playback status
+- **Live countdown timer**: Dynamic display showing song title, remaining time, and total duration
+- **Visual status indicators**: 🎵 for playing, ⏸️ [PAUSED] for paused, [PREVIEW] for preview mode
+- **Same-line updates**: Countdown refreshes on the same console line without scrolling
 - **Command-line options**: Flexible file and folder loading with preview mode
 
 ## Controls
@@ -80,16 +85,24 @@ nigamp -h
 
 1. **Automatic Directory Scanning**: When you run nigamp without arguments, it automatically scans `C:\Music` for MP3 and WAV files
 2. **Intelligent Playlist Creation**: Creates a shuffled playlist using the Fisher-Yates algorithm for truly random playback
-3. **Instant Playback Control**: 
+3. **Duration-Based Playback**: 
+   - Reads actual song duration from audio files for precise timing
+   - Advances tracks only when full song duration completes, not when file reading finishes
+   - Continues playing with silence padding if decoder finishes early
+4. **Live Visual Feedback**:
+   - Shows real-time countdown with remaining time in MM:SS format
+   - Updates on the same console line without scrolling: `🎵 Song Title - Time remaining: 02:45 / 04:20`
+   - Displays pause status with visual indicators: `⏸️ [PAUSED]` 
+5. **Instant Playback Control**: 
    - Press global hotkeys from anywhere in Windows to control playback
    - No need to focus the console window - hotkeys work system-wide
    - Zero-delay track switching when you press next/previous
-4. **Smart Memory Management**: Uses streaming audio with minimal buffering to stay under 10MB RAM
-5. **Background Monitoring**: Automatically rescans your music directory every 10 minutes to pick up new files
-6. **Volume Enhancement**: Applies 50% volume boost for better audio quality
-7. **Format Detection**: Automatically detects MP3 vs WAV files and uses appropriate decoder
-8. **Continuous Operation**: Plays through entire playlist, then loops back to beginning
-9. **Preview Mode**: Perfect for quickly browsing large music collections - plays first 10 seconds of each song
+6. **Smart Memory Management**: Uses streaming audio with minimal buffering to stay under 10MB RAM
+7. **Background Monitoring**: Automatically rescans your music directory every 10 minutes to pick up new files
+8. **Volume Enhancement**: Applies 50% volume boost for better audio quality
+9. **Format Detection**: Automatically detects MP3 vs WAV files and uses appropriate decoder
+10. **Continuous Operation**: Plays through entire playlist, then loops back to beginning
+11. **Preview Mode**: Perfect for quickly browsing large music collections - plays first 10 seconds of each song with countdown
 
 ### Typical Workflow
 

@@ -11,11 +11,30 @@
 #include <filesystem>
 #include <mutex>
 
+// Simple debug logging
+#ifdef DEBUG
+    #define DEBUG_LOG(msg) std::cout << "[DEBUG] " << msg << std::endl
+#else
+    #define DEBUG_LOG(msg) do {} while(0)
+#endif
+
+#define INFO_LOG(msg) std::cout << "[INFO] " << msg << std::endl
+#define ERROR_LOG(msg) std::cerr << "[ERROR] " << msg << std::endl
+
 namespace nigamp {
 
 class MusicPlayer {
 private:
     std::unique_ptr<IAudioEngine> m_audio_engine;
+    
+    // Helper function to format time as MM:SS
+    std::string format_time(double seconds) {
+        int minutes = static_cast<int>(seconds) / 60;
+        int secs = static_cast<int>(seconds) % 60;
+        char buffer[6];
+        snprintf(buffer, sizeof(buffer), "%02d:%02d", minutes, secs);
+        return std::string(buffer);
+    }
     std::unique_ptr<IPlaylist> m_playlist;
     std::unique_ptr<IHotkeyHandler> m_hotkey_handler;
     std::unique_ptr<IFileScanner> m_file_scanner;
@@ -38,6 +57,11 @@ private:
     std::atomic<bool> m_timeout_active{false};
     std::chrono::steady_clock::time_point m_eof_signaled_time;
     static constexpr int COMPLETION_TIMEOUT_SECONDS = 3;
+    
+    // Duration-based completion tracking
+    std::chrono::steady_clock::time_point m_playback_start_time;
+    double m_current_song_duration = 0.0;
+    bool m_use_duration_based_completion = true;
     
     // Reindexing properties
     std::string m_current_directory = ".";
@@ -321,13 +345,17 @@ private:
         
         m_current_decoder = create_decoder(m_current_song->file_path);
         if (!m_current_decoder || !m_current_decoder->open(m_current_song->file_path)) {
-            std::cerr << "Failed to open: " << m_current_song->file_path << "\n";
+            ERROR_LOG("Failed to open: " << m_current_song->file_path);
             return;
         }
         
+        // Get song duration for duration-based completion
+        m_current_song_duration = m_current_decoder->get_duration();
+        DEBUG_LOG("Song duration: " << m_current_song_duration << " seconds");
+        
         AudioFormat format = m_current_decoder->get_format();
         if (!m_audio_engine->initialize(format)) {
-            std::cerr << "Failed to initialize audio engine\n";
+            ERROR_LOG("Failed to initialize audio engine");
             return;
         }
         
@@ -339,15 +367,18 @@ private:
         m_audio_engine->set_volume(m_volume);
         
         if (!m_audio_engine->start()) {
-            std::cerr << "Failed to start audio engine\n";
+            ERROR_LOG("Failed to start audio engine");
             return;
         }
+        
+        // Record playback start time for duration-based completion
+        m_playback_start_time = std::chrono::steady_clock::now();
         
         m_playback_thread = std::thread(&MusicPlayer::playback_loop, this);
     }
     
     void stop_current_song() {
-        std::cout << "Stopping current song: " << (m_current_song ? m_current_song->title : "None") << "\n";
+        DEBUG_LOG("Stopping current song: " << (m_current_song ? m_current_song->title : "None"));
         // Signal playback thread to stop if it's running
         if (m_playback_thread.joinable()) {
             std::cout << "Stopping playback thread...\n";
@@ -385,14 +416,57 @@ private:
             const auto preview_duration = std::chrono::seconds(10);
             
             bool preview_completed = false;
+            auto last_display_update = std::chrono::steady_clock::now();
+            const auto display_update_interval = std::chrono::milliseconds(500); // Update every 500ms
             
-            while (!m_stop_playback && !m_should_quit && m_current_decoder && !m_current_decoder->is_eof()) {
+            while (!m_stop_playback && !m_should_quit && m_current_decoder) {
+                // Check song duration completion (ignore decoder EOF)
+                if (m_use_duration_based_completion && m_current_song_duration > 0) {
+                    auto elapsed = std::chrono::steady_clock::now() - m_playback_start_time;
+                    auto elapsed_seconds = std::chrono::duration<double>(elapsed).count();
+                    
+                    // Update countdown display periodically
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - last_display_update >= display_update_interval) {
+                        double remaining_seconds = m_current_song_duration - elapsed_seconds;
+                        if (remaining_seconds > 0) {
+                            std::string status = m_is_paused ? "⏸️  [PAUSED]" : "🎵";
+                            std::cout << "\r" << status << " " << (m_current_song ? m_current_song->title : "Unknown") 
+                                      << " - Time remaining: " << format_time(remaining_seconds)
+                                      << " / " << format_time(m_current_song_duration) << std::flush;
+                        }
+                        last_display_update = now;
+                    }
+                    
+                    if (elapsed_seconds >= m_current_song_duration) {
+                        std::cout << "\r" << std::string(80, ' ') << "\r"; // Clear the line
+                        DEBUG_LOG("Song completed by duration (" << elapsed_seconds << "s >= " 
+                                  << m_current_song_duration << "s)");
+                        break;
+                    }
+                }
+                
                 // Check if preview mode time limit reached
                 if (m_preview_mode) {
                     auto elapsed = std::chrono::steady_clock::now() - start_time;
+                    
+                    // Update preview countdown display
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - last_display_update >= display_update_interval) {
+                        double preview_elapsed = std::chrono::duration<double>(elapsed).count();
+                        double preview_remaining = 10.0 - preview_elapsed;
+                        if (preview_remaining > 0) {
+                            std::cout << "\r🎵 [PREVIEW] " << (m_current_song ? m_current_song->title : "Unknown") 
+                                      << " - Time remaining: " << format_time(preview_remaining)
+                                      << " / " << format_time(10.0) << std::flush;
+                        }
+                        last_display_update = now;
+                    }
+                    
                     if (elapsed >= preview_duration) {
+                        std::cout << "\r" << std::string(80, ' ') << "\r"; // Clear the line
                         if (m_current_song) {
-                            std::cout << "Preview complete for: " << m_current_song->title << "\n";
+                            INFO_LOG("Preview complete for: " << m_current_song->title);
                         }
                         preview_completed = true;
                         break;
@@ -400,10 +474,17 @@ private:
                 }
                 
                 if (!m_is_paused) {
+                    // Keep decoding even if decoder hits EOF - we'll stop based on duration
                     if (m_current_decoder->decode(buffer, buffer_size)) {
                         m_audio_engine->write_samples(buffer);
+                    } else if (m_current_decoder->is_eof()) {
+                        // Decoder hit EOF but we continue until duration is reached
+                        // Fill buffer with silence to keep audio engine running
+                        DEBUG_LOG("Decoder EOF reached, filling with silence until duration completes");
+                        buffer.assign(buffer_size, 0);
+                        m_audio_engine->write_samples(buffer);
                     } else {
-                        std::cout << "Decode failed, ending playback\n";
+                        DEBUG_LOG("Decode failed, ending playback");
                         break;
                     }
                 }
@@ -411,17 +492,21 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             
-            // Signal EOF to audio engine when decoding is complete
-            if (m_current_decoder && (m_current_decoder->is_eof() || preview_completed)) {
-                if (m_current_decoder->is_eof()) {
-                    std::cout << "Decoder reached EOF, signaling audio engine\n";
-                } else {
-                    std::cout << "Preview completed, signaling audio engine\n";
-                }
+            // Signal completion - either by duration, preview, or actual completion
+            if (m_current_decoder) {
+                std::cout << "\r" << std::string(80, ' ') << "\r"; // Clear the countdown line
+                DEBUG_LOG("Playback completed, signaling audio engine");
                 m_audio_engine->signal_eof();
                 
-                // Start timeout safety mechanism
-                start_completion_timeout();
+                // For duration-based completion, immediately advance to next track
+                if (m_use_duration_based_completion) {
+                    // Give audio engine brief moment to process, then advance
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    m_advance_to_next = true;
+                } else {
+                    // Use traditional timeout mechanism for other cases
+                    start_completion_timeout();
+                }
             }
             
             // Note: Track advancement now happens via audio engine callback

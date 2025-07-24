@@ -38,6 +38,14 @@ struct DirectSoundEngine::Impl {
     size_t total_samples_processed = 0;
     std::chrono::steady_clock::time_point start_time;
     
+    // DirectSound buffer position tracking
+    DWORD last_write_position = 0;
+    DWORD frame_size = 0;
+    
+    // Alternative: Time-based completion tracking
+    std::chrono::steady_clock::time_point last_audio_written_time;
+    std::chrono::milliseconds estimated_remaining_ms{0};
+    
     bool create_window() {
         WNDCLASS wc = {};
         wc.lpfnWndProc = DefWindowProc;
@@ -81,6 +89,9 @@ struct DirectSoundEngine::Impl {
         buffer_size = format.sample_rate * 2;
         buffer_bytes = buffer_size * format.channels * (format.bits_per_sample / 8);
         
+        // Initialize frame size for completion detection
+        frame_size = format.channels * (format.bits_per_sample / 8);
+        
         WAVEFORMATEX wave_format = {};
         wave_format.wFormatTag = WAVE_FORMAT_PCM;
         wave_format.nChannels = static_cast<WORD>(format.channels);
@@ -102,8 +113,33 @@ struct DirectSoundEngine::Impl {
     
     void check_completion() {
         if (eof_signaled.load() && pending_samples.empty()) {
-            fire_completion_callback(AudioEngineError::SUCCESS);
+            // Use both methods for bulletproof completion detection
+            bool buffer_drained = is_directsound_buffer_drained();
+            bool time_elapsed = is_audio_playback_complete_by_time();
+            
+            if (buffer_drained || time_elapsed) {
+                fire_completion_callback(AudioEngineError::SUCCESS);
+            }
         }
+    }
+    
+    bool is_directsound_buffer_drained() {
+        DWORD play_cursor, write_cursor;
+        HRESULT hr = secondary_buffer->GetCurrentPosition(&play_cursor, &write_cursor);
+        if (FAILED(hr)) return true; // If we can't check, assume drained
+        
+        // Check if play cursor has caught up to our last write position
+        // This means all audio we wrote has been played
+        return (play_cursor >= last_write_position) || 
+               (last_write_position - play_cursor < frame_size * 2); // Small tolerance
+    }
+    
+    // Alternative: Time-based completion (simpler & more reliable)
+    bool is_audio_playback_complete_by_time() {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_audio_written_time);
+        return elapsed >= estimated_remaining_ms;
     }
     
     void fire_completion_callback(AudioEngineError error_code) {
@@ -205,6 +241,16 @@ struct DirectSoundEngine::Impl {
                             pending_samples.begin() + samples_written);
         
         write_cursor = (write_cursor + bytes_to_write) % buffer_bytes;
+        
+        // Update last write position for completion detection
+        last_write_position = (last_write_position + audio_bytes1 + audio_bytes2) % buffer_bytes;
+        
+        // Update timing-based completion tracking
+        last_audio_written_time = std::chrono::steady_clock::now();
+        // Calculate remaining playback time: buffer_size_in_samples / sample_rate * 1000ms
+        size_t buffer_samples = buffer_bytes / frame_size;
+        estimated_remaining_ms = std::chrono::milliseconds(
+            (buffer_samples * 1000) / format.sample_rate);
     }
 };
 
