@@ -11,8 +11,19 @@
       "Bash(.build.bat)",
       "Bash(mingw32-make:*)",
       "Bash(build.bat)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(cmake:*)",
+      "Bash(taskkill:*)",
+      "Bash(.buildnigamp.exe --file \"tests\\data\\test1.mp3\" --preview)",
+      "Bash(buildnigamp.exe --file \"tests\\data\\test1.mp3\" --preview)",
+      "Bash(./build/nigamp.exe --file \"tests/data/test1.mp3\" --preview)",
+      "Bash(copy:*)",
+      "Bash(cp:*)",
+      "Bash(dir:*)"
     ],
-    "deny": []
+    "deny": [],
+    "additionalDirectories": [
+      "C:\\"
+    ]
   }
 }

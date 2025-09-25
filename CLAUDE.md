@@ -125,6 +125,31 @@ The codebase uses Google Test with comprehensive unit test coverage:
 
 **Important**: Use `CallbackSimple.*` tests for callback mechanism validation - these avoid mutex deadlocks that can occur in complex mock implementations.
 
+### Specialized Testing Commands
+Beyond basic unit tests, the project includes specialized test executables and scripts:
+
+```powershell
+# Interactive test executables for manual validation
+.\build\test_hotkey_handler.exe          # Interactive hotkey testing
+.\build\test_music_player_simulation.exe # Music player simulation
+
+# Test scripts for specific scenarios
+.\test_fixed_callbacks.bat               # Callback architecture validation
+.\test_hotkeys.bat                       # Hotkey system testing
+.\test_music_simulation.bat              # Full music player simulation
+
+# Callback-specific testing (from TESTING_CALLBACKS.md)
+.\build\tests\nigamp_tests.exe --gtest_filter="CallbackArchitecture.*"
+.\build\nigamp.exe --file "tests\data\test1.mp3" --preview  # Real audio test
+```
+
+The test infrastructure validates:
+- Callback timing precision (completion within 10-100ms of audio end)
+- Race condition prevention in multi-threaded scenarios
+- Exception safety in callback execution
+- Timeout fallback mechanisms (3-second safety timeout)
+- Buffer drain detection and completion timing
+
 ## Third-Party Dependencies
 
 All dependencies are header-only or statically linked:
@@ -234,3 +259,89 @@ When creating mock implementations for testing:
 - **Countdown Display**: Test with both normal and preview modes to ensure proper formatting
 - **Debug Output**: Enable DEBUG_LOG during development to trace timing and completion logic
 - **Thread Safety**: Pay special attention to duration tracking variables in multi-threaded contexts
+
+## Critical Bug Prevention
+
+### Track Advancement Cascade Prevention
+Recent fixes have resolved critical race conditions in track advancement. When modifying advancement logic, be aware of these patterns:
+
+**Timing Race Conditions:**
+- `m_playback_start_time` must be set inside `playback_loop()`, not in `play_current_song()` 
+- Duration-based completion can fire prematurely if timing starts during audio engine initialization
+- Always check `!m_stop_playback.load()` before setting `m_advance_to_next = true`
+
+**Manual vs Automatic Advancement:**
+- Manual track changes (hotkeys) should prevent automatic completion mechanisms
+- Timeout threads must not start when `m_stop_playback` is true
+- Duration-based completion should be skipped during manual stops
+
+**State Reset Requirements:**
+When implementing `stop_current_song()`, ensure these are properly reset:
+- `m_timeout_active = false` - cancel safety timeouts
+- `m_advance_to_next = false` - prevent cascade advancement
+- `m_current_song_duration = 0.0` - clear cached duration
+- **Preserve** `m_is_paused` state across track changes
+- Clear audio engine completion callbacks to prevent stale callbacks
+
+### Common Threading Pitfalls
+- Never start timeout mechanisms during manual track stopping
+- Duration-based completion logic can race with manual stop signals
+- Always use atomic exchange patterns: `if (flag.exchange(false))` for single-execution semantics
+
+## Code Quality and Development Standards
+
+### Debug Logging Guidelines
+The codebase uses a clean conditional compilation system for debug output:
+- Only use `DEBUG_LOG()`, `INFO_LOG()`, and `ERROR_LOG()` macros - never raw `std::cout` for debug output
+- Debug statements are automatically disabled in release builds via `#ifdef DEBUG`
+- Keep production code clean by removing temporary debug statements after development
+- Use `INFO_LOG()` for user-facing information and `ERROR_LOG()` for error reporting
+
+### Build System Integration
+The project uses CMake with MinGW on Windows:
+- CMakeLists.txt automatically detects MinGW compiler paths
+- Static linking is enabled for standalone executable deployment
+- Required third-party headers are validated during CMake configuration
+- Test infrastructure is integrated with CTest for automated validation
+
+### File Organization
+- Headers in `include/` directory use `#pragma once` for include guards
+- Implementation files in `src/` directory match header names
+- Third-party dependencies in `third_party/` directory (header-only libraries)
+- Test files in `tests/` directory with comprehensive coverage
+- Build artifacts in `build/` directory (auto-generated)
+
+### Interface Design Patterns
+All major components follow the interface segregation principle:
+- `IAudioEngine` - Abstract audio output interface
+- `IAudioDecoder` - Abstract decoder interface for MP3/WAV support
+- `IPlaylist` - Abstract playlist management interface
+- `IHotkeyHandler` - Abstract hotkey system interface
+- `IFileScanner` - Abstract file system scanning interface
+
+This enables dependency injection and comprehensive unit testing with mock implementations.
+
+### Data Flow and Key Algorithms
+The application implements several sophisticated algorithms for audio processing:
+
+**Fisher-Yates Shuffle Algorithm** (`playlist.cpp`):
+- Ensures truly random playlist ordering without bias
+- Implemented in `fisher_yates_shuffle()` method for mathematical correctness
+- Supports adding songs to shuffled playlist while maintaining randomness
+
+**Duration-Based Completion Algorithm** (`main.cpp`):
+- Tracks `m_playback_start_time` when audio actually begins playing
+- Uses `IAudioDecoder::get_duration()` for precise song length calculation
+- Continues playback with silence padding after decoder EOF until full duration elapsed
+- Prevents premature track advancement common in traditional audio players
+
+**Circular Buffer Management** (`audio_engine.cpp`):
+- DirectSound secondary buffer with circular write cursor management
+- Dual completion detection: buffer position checking + time-based calculation
+- Atomic flag coordination between audio thread and completion callback thread
+
+**Live Display Update Algorithm** (`main.cpp`):
+- Updates countdown every 500ms using carriage return (`\r`) for same-line display
+- Calculates remaining time as `total_duration - elapsed_seconds`
+- Formats time display as `MM:SS` with proper zero-padding
+- Handles pause state preservation across track transitions

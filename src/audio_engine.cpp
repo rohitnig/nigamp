@@ -6,6 +6,7 @@
 #include <mutex>
 #include <algorithm>
 #include <string>
+#include <deque>
 #include <iostream>
 
 namespace nigamp {
@@ -27,8 +28,8 @@ struct DirectSoundEngine::Impl {
     std::thread playback_thread;
     std::atomic<bool> should_stop{false};
     std::mutex buffer_mutex;
-    
-    AudioBuffer pending_samples;
+
+    std::deque<int16_t> pending_samples;
     size_t write_cursor = 0;
     
     // New callback-based completion detection
@@ -146,7 +147,6 @@ struct DirectSoundEngine::Impl {
     void fire_completion_callback(AudioEngineError error_code) {
         std::lock_guard<std::mutex> lock(callback_mutex);
         if (!callback_fired.exchange(true) && completion_callback) {
-            std::cout << "[DEBUG] Firing completion callback" << std::endl;
             try {
                 auto completion_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start_time);
@@ -224,14 +224,19 @@ struct DirectSoundEngine::Impl {
                                         (audio_bytes1 + audio_bytes2) / sizeof(int16_t));
         
         if (audio_ptr1 && audio_bytes1 > 0) {
-            size_t samples1 = std::min(samples_to_copy, audio_bytes1 / sizeof(int16_t));
-            memcpy(audio_ptr1, pending_samples.data(), samples1 * sizeof(int16_t));
-            samples_to_copy -= samples1;
+            size_t samples_to_copy1 = std::min(samples_to_copy, (size_t)audio_bytes1 / sizeof(int16_t));
+            for (size_t i = 0; i < samples_to_copy1; ++i) {
+                static_cast<int16_t*>(audio_ptr1)[i] = pending_samples[i];
+            }
+            samples_to_copy -= samples_to_copy1;
         }
         
         if (audio_ptr2 && audio_bytes2 > 0 && samples_to_copy > 0) {
+            size_t samples_to_copy2 = std::min(samples_to_copy, (size_t)audio_bytes2 / sizeof(int16_t));
             size_t offset = audio_bytes1 / sizeof(int16_t);
-            memcpy(audio_ptr2, pending_samples.data() + offset, samples_to_copy * sizeof(int16_t));
+            for (size_t i = 0; i < samples_to_copy2; ++i) {
+                static_cast<int16_t*>(audio_ptr2)[i] = pending_samples[offset + i];
+            }
         }
         
         secondary_buffer->Unlock(audio_ptr1, audio_bytes1, audio_ptr2, audio_bytes2);
@@ -287,7 +292,6 @@ bool DirectSoundEngine::initialize(const AudioFormat& format) {
 }
 
 bool DirectSoundEngine::start() {
-    std::cout << "[DEBUG] AudioEngine::start()" << std::endl;
     if (!m_impl->secondary_buffer) {
         return false;
     }
@@ -311,15 +315,23 @@ bool DirectSoundEngine::start() {
 }
 
 bool DirectSoundEngine::stop() {
-    std::cout << "[DEBUG] AudioEngine::stop()" << std::endl;
     if (!m_impl->secondary_buffer) {
         return false;
     }
     
+    // Signal thread to stop FIRST, before acquiring any locks
     m_impl->is_playing = false;
     m_impl->should_stop = true;
     
-    // Clear pending audio samples immediately for instant stop
+    // Stop DirectSound buffer immediately
+    HRESULT hr = m_impl->secondary_buffer->Stop();
+    
+    // Now wait for playback thread to finish (it should exit quickly now)
+    if (m_impl->playback_thread.joinable()) {
+        m_impl->playback_thread.join();
+    }
+    
+    // Now it's safe to clear data structures - no thread contention
     {
         std::lock_guard<std::mutex> lock(m_impl->buffer_mutex);
         m_impl->pending_samples.clear();
@@ -331,29 +343,21 @@ bool DirectSoundEngine::stop() {
         m_impl->completion_callback = nullptr;
     }
     
-    if (m_impl->playback_thread.joinable()) {
-        m_impl->playback_thread.join();
-    }
-    
-    HRESULT hr = m_impl->secondary_buffer->Stop();
-    
     // Reset write cursor position for clean start on next play
     m_impl->write_cursor = 0;
     
-    // Optionally reset playback position to beginning for immediate silence
+    // Reset playback position to beginning for immediate silence
     m_impl->secondary_buffer->SetCurrentPosition(0);
     
     return SUCCEEDED(hr);
 }
 
 bool DirectSoundEngine::pause() {
-    std::cout << "[DEBUG] AudioEngine::pause()" << std::endl;
     m_impl->is_paused = true;
     return true;
 }
 
 bool DirectSoundEngine::resume() {
-    std::cout << "[DEBUG] AudioEngine::resume()" << std::endl;
     m_impl->is_paused = false;
     return true;
 }

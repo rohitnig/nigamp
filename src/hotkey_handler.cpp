@@ -102,11 +102,21 @@ struct WindowsHotkeyHandler::Impl {
         }
     }
     
+    bool is_console_focused() {
+        HWND console_window = GetConsoleWindow();
+        if (!console_window) {
+            return false; // No console window
+        }
+        
+        HWND foreground_window = GetForegroundWindow();
+        return (console_window == foreground_window);
+    }
+    
     void console_input_loop() {
         while (!should_stop) {
-            // Check if Ctrl is pressed
-            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
-                // Check for local hotkey combinations
+            // Only process local hotkeys when console window has focus
+            if (is_console_focused() && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+                // Check for local hotkey combinations (Ctrl+* keys)
                 if (GetAsyncKeyState('N') & 0x8000) {
                     if (callback) callback(HotkeyAction::NEXT_TRACK);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Prevent rapid repeats

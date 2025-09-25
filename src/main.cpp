@@ -220,7 +220,6 @@ private:
             if (m_timeout_active.load()) {
                 std::cerr << "Warning: Audio completion callback timeout after " 
                           << COMPLETION_TIMEOUT_SECONDS << " seconds. Forcing track advance.\n";
-                DEBUG_LOG("*** TIMEOUT THREAD setting m_advance_to_next=true");
                 m_advance_to_next = true;
                 m_timeout_active = false;
             }
@@ -228,7 +227,6 @@ private:
     }
     
     void handle_playback_completion(const CompletionResult& result) {
-        DEBUG_LOG("*** COMPLETION CALLBACK fired for song: " << (m_current_song ? m_current_song->title : "Unknown"));
         
         // Cancel timeout since callback fired successfully
         m_timeout_active = false;
@@ -241,7 +239,6 @@ private:
         }
         
         // Signal track advancement
-        DEBUG_LOG("*** COMPLETION CALLBACK setting m_advance_to_next=true");
         m_advance_to_next = true;
     }
     
@@ -278,31 +275,43 @@ private:
     void handle_track_advance() {
         std::lock_guard<std::mutex> lock(m_playlist_mutex);
         
+        // For single-file preview mode, quit after completion instead of looping
+        if (m_preview_mode && m_playlist->size() == 1) {
+            std::cout << "Preview complete for single file. Exiting...\n";
+            // Set quit flag instead of calling quit() directly to avoid deadlock
+            m_should_quit = true;
+            return;
+        }
+        
         // For automatic advancement after song completion, move to next song
         const Song* next_song = m_playlist->next();
-        if (next_song) {
+        if (next_song && next_song != m_current_song) {
             std::cout << "Auto-advancing to next track: " << next_song->title << "\n";
             stop_current_song();
             m_current_song = next_song;
             play_current_song();
+        } else if (next_song == m_current_song) {
+            // Single song in playlist - for preview mode, quit; otherwise loop
+            if (m_preview_mode) {
+                std::cout << "Preview mode with single song complete. Exiting...\n";
+                // Set quit flag instead of calling quit() directly to avoid deadlock
+                m_should_quit = true;
+            } else {
+                std::cout << "Single song playlist - restarting current song\n";
+                stop_current_song();
+                play_current_song();
+            }
         } else {
             std::cout << "No more tracks, staying on current song\n";
         }
     }
     
     void next_track() {
-        DEBUG_LOG("*** NEXT_TRACK called - manual user hotkey");
-        DEBUG_LOG("Attempting to have a mutex lock for next_track()");
         std::lock_guard<std::mutex> lock(m_playlist_mutex);
-        DEBUG_LOG("Mutex lock acquired for next_track()");
         
         const Song* next_song = m_playlist->next();
         if (next_song) {
-            DEBUG_LOG("*** NEXT_TRACK stopping current song and playing: " << next_song->title);
             stop_current_song();
-            DEBUG_LOG("next_track() stopping current song");
-            DEBUG_LOG("next_track() setting current song to next song");
-            DEBUG_LOG("next_track() calling play_current_song()");
             INFO_LOG("Now playing: " << next_song->title);
             m_current_song = next_song;
             play_current_song();
@@ -369,7 +378,6 @@ private:
         
         // Get song duration for duration-based completion
         m_current_song_duration = m_current_decoder->get_duration();
-        DEBUG_LOG("Song duration: " << m_current_song_duration << " seconds");
         
         AudioFormat format = m_current_decoder->get_format();
         if (!m_audio_engine->initialize(format)) {
@@ -395,10 +403,8 @@ private:
     }
     
     void stop_current_song() {
-        DEBUG_LOG("*** STOP_CURRENT_SONG called for: " << (m_current_song ? m_current_song->title : "None"));
         
         // Cancel any active timeout thread and reset advancement flags
-        DEBUG_LOG("*** Setting m_timeout_active=false, m_advance_to_next=false");
         m_timeout_active = false;
         m_advance_to_next = false;
         
@@ -407,44 +413,44 @@ private:
         // Note: m_playback_start_time will be reset in play_current_song()
         // Note: m_is_paused is preserved so next song respects current pause state
         
-        // Clear audio engine completion callback to prevent stale callbacks
+        // Signal playback loop to exit FIRST - this prevents further mutex contention
+        m_stop_playback = true;        
+        
+        // Wait for playback thread to finish. This is the most important change.
+        // By joining here, we ensure the thread is no longer accessing the decoder or audio engine.
+        if (m_playback_thread.joinable()) {
+            std::cout << "Waiting for playback thread to finish...\n";
+            m_playback_thread.join();
+            std::cout << "Playback thread stopped\n";
+        }
+        
+        // Now that the thread is stopped, it's safe to stop hardware and close resources.
         if (m_audio_engine) {
-            DEBUG_LOG("*** Clearing audio engine completion callback");
-            m_audio_engine->set_completion_callback(nullptr);
+            std::cout << "Stopping audio engine...\n";
+            m_audio_engine->stop();
+        }
+        
+        if (m_current_decoder) {
+            std::cout << "Force closing decoder for instant stop...\n";
+            m_current_decoder->close();
         }
         
         // Wait for timeout thread to finish if it's running
         if (m_timeout_thread.joinable()) {
-            DEBUG_LOG("Waiting for timeout thread to finish...");
             m_timeout_thread.join();
-            DEBUG_LOG("Timeout thread finished");
         }
         
-        // Signal playback thread to stop if it's running
-        if (m_playback_thread.joinable()) {
-            std::cout << "Stopping playback thread...\n";
-            // Signal playback loop to exit
-            m_stop_playback = true;
-            if (m_audio_engine) {
-                std::cout << "Stopping audio engine...\n";
-                m_audio_engine->stop();
-            }
-            
-            // Force immediate decoder close for instant stopping
-            if (m_current_decoder) {
-                std::cout << "Force closing decoder for instant stop...\n";
-                m_current_decoder->close();
-            }
-            
-            std::cout << "Waiting for playback thread to finish...\n";
-            m_playback_thread.join();
-            std::cout << "Playback thread stopped\n";
-            m_stop_playback = false; // Reset for next playback
-        }
+        // Reset for next playback
+        m_stop_playback = false;
 
         if (m_current_decoder) {
             std::cout << "Resetting decoder...\n";
             m_current_decoder.reset();
+        }
+        
+        // Clear audio engine completion callback after all threads are stopped
+        if (m_audio_engine) {
+            m_audio_engine->set_completion_callback(nullptr);
         }
     }    
 
@@ -484,8 +490,6 @@ private:
                     
                     if (elapsed_seconds >= m_current_song_duration) {
                         std::cout << "\r" << std::string(80, ' ') << "\r"; // Clear the line
-                        DEBUG_LOG("Song completed by duration (" << elapsed_seconds << "s >= " 
-                                  << m_current_song_duration << "s)");
                         break;
                     }
                 }
@@ -524,11 +528,9 @@ private:
                     } else if (m_current_decoder->is_eof()) {
                         // Decoder hit EOF but we continue until duration is reached
                         // Fill buffer with silence to keep audio engine running
-                        DEBUG_LOG("Decoder EOF reached, filling with silence until duration completes");
                         buffer.assign(buffer_size, 0);
                         m_audio_engine->write_samples(buffer);
                     } else {
-                        DEBUG_LOG("Decode failed, ending playback");
                         break;
                     }
                 }
@@ -539,7 +541,6 @@ private:
             // Signal completion - either by duration, preview, or actual completion
             if (m_current_decoder) {
                 std::cout << "\r" << std::string(80, ' ') << "\r"; // Clear the countdown line
-                DEBUG_LOG("Playback completed, signaling audio engine");
                 m_audio_engine->signal_eof();
                 
                 // For duration-based completion, immediately advance to next track
@@ -547,11 +548,9 @@ private:
                 if (m_use_duration_based_completion && !m_stop_playback.load()) {
                     // Give audio engine brief moment to process, then advance
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    DEBUG_LOG("*** PLAYBACK LOOP setting m_advance_to_next=true (duration-based)");
                     m_advance_to_next = true;
                 } else if (!m_stop_playback.load()) {
                     // Use traditional timeout mechanism only if not manually stopping
-                    DEBUG_LOG("*** PLAYBACK LOOP starting completion timeout");
                     start_completion_timeout();
                 }
                 // If m_stop_playback is true, don't start any completion mechanism
