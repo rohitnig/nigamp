@@ -44,6 +44,23 @@ public:
     void process_messages() override;
 };
 
+class LinuxHotkeyHandler : public IHotkeyHandler {
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+
+public:
+    LinuxHotkeyHandler();
+    ~LinuxHotkeyHandler() override;
+
+    bool initialize() override;
+    void shutdown() override;
+    void set_callback(HotkeyCallback callback) override;
+    bool register_hotkeys() override;
+    void unregister_hotkeys() override;
+    void process_messages() override;
+};
+
 std::unique_ptr<IHotkeyHandler> create_hotkey_handler();
 
 }

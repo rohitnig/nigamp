@@ -17,19 +17,28 @@ set(TEST_SOURCES
     test_playlist.cpp
     test_file_scanner.cpp
     test_decoder.cpp
-    test_audio_engine.cpp
     test_callback_simple.cpp
     test_callback_architecture.cpp
 )
 
-# Standalone hotkey test (separate executable)
-add_executable(test_hotkey_handler 
-    test_hotkey_handler.cpp
-    ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
-)
+# Platform-specific audio engine test
+if(WIN32)
+    list(APPEND TEST_SOURCES test_audio_engine.cpp)
+endif()
 
-# Link libraries for hotkey test
-target_link_libraries(test_hotkey_handler user32)
+# Standalone hotkey test (separate executable)
+if(WIN32)
+    add_executable(test_hotkey_handler 
+        test_hotkey_handler.cpp
+        ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
+    )
+    target_link_libraries(test_hotkey_handler user32)
+elseif(UNIX AND NOT APPLE)
+    add_executable(test_hotkey_handler 
+        test_hotkey_handler.cpp
+        ${CMAKE_SOURCE_DIR}/src/linux_hotkey_handler.cpp
+    )
+endif()
 
 # Include directories for hotkey test
 target_include_directories(test_hotkey_handler PRIVATE
@@ -38,14 +47,20 @@ target_include_directories(test_hotkey_handler PRIVATE
 )
 
 # Music player simulation test (separate executable)
-add_executable(test_music_player_simulation 
-    test_music_player_simulation.cpp
-    ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
-    ${CMAKE_SOURCE_DIR}/src/playlist.cpp
-)
-
-# Link libraries for music player test
-target_link_libraries(test_music_player_simulation user32)
+if(WIN32)
+    add_executable(test_music_player_simulation 
+        test_music_player_simulation.cpp
+        ${CMAKE_SOURCE_DIR}/src/hotkey_handler.cpp
+        ${CMAKE_SOURCE_DIR}/src/playlist.cpp
+    )
+    target_link_libraries(test_music_player_simulation user32)
+elseif(UNIX AND NOT APPLE)
+    add_executable(test_music_player_simulation 
+        test_music_player_simulation.cpp
+        ${CMAKE_SOURCE_DIR}/src/linux_hotkey_handler.cpp
+        ${CMAKE_SOURCE_DIR}/src/playlist.cpp
+    )
+endif()
 
 # Include directories for music player test
 target_include_directories(test_music_player_simulation PRIVATE
@@ -68,9 +83,14 @@ target_include_directories(nigamp_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
-# Windows-specific libraries for tests
+# Platform-specific libraries for tests
 if(WIN32)
     target_link_libraries(nigamp_tests winmm dsound ole32 user32)
+elseif(UNIX AND NOT APPLE)
+    find_library(ASOUND_LIBRARY asound)
+    if(ASOUND_LIBRARY)
+        target_link_libraries(nigamp_tests ${ASOUND_LIBRARY})
+    endif()
 endif()
 
 # Compiler-specific options for MinGW

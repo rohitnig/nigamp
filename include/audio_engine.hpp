@@ -73,6 +73,33 @@ public:
     size_t get_buffered_samples() const override;
 };
 
+class AlsaAudioEngine : public IAudioEngine {
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+
+public:
+    AlsaAudioEngine();
+    ~AlsaAudioEngine() override;
+
+    bool initialize(const AudioFormat& format) override;
+    bool start() override;
+    bool stop() override;
+    bool pause() override;
+    bool resume() override;
+    void shutdown() override;
+    bool write_samples(const AudioBuffer& buffer) override;
+    size_t get_buffer_size() const override;
+    bool is_playing() const override;
+    void set_volume(float volume) override;
+    float get_volume() const override;
+    
+    // New callback-based completion detection
+    void set_completion_callback(CompletionCallback callback) override;
+    void signal_eof() override;
+    size_t get_buffered_samples() const override;
+};
+
 std::unique_ptr<IAudioEngine> create_audio_engine();
 
 }

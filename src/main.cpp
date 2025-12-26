@@ -11,6 +11,14 @@
 #include <filesystem>
 #include <mutex>
 
+#ifdef _WIN32
+    #include <windows.h>
+    #include <shlobj.h>
+#elif __linux__
+    #include <unistd.h>
+    #include <pwd.h>
+#endif
+
 // Simple debug logging
 #ifdef DEBUG
     #define DEBUG_LOG(msg) std::cout << "[DEBUG] " << msg << std::endl
@@ -22,6 +30,28 @@
 #define ERROR_LOG(msg) std::cerr << "[ERROR] " << msg << std::endl
 
 namespace nigamp {
+
+// Get platform-specific default music directory
+std::string get_default_music_directory() {
+#ifdef _WIN32
+    char path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_MYMUSIC, nullptr, SHGFP_TYPE_CURRENT, path))) {
+        return std::string(path);
+    }
+    return "C:\\Music";  // Fallback
+#elif __linux__
+    const char* home = getenv("HOME");
+    if (home) {
+        std::string music_dir = std::string(home) + "/Music";
+        if (std::filesystem::exists(music_dir)) {
+            return music_dir;
+        }
+    }
+    return ".";  // Fallback to current directory
+#else
+    return ".";
+#endif
+}
 
 class MusicPlayer {
 private:
@@ -152,6 +182,7 @@ public:
     void run(const std::string& path = "", bool is_file = false) {
         std::cout << "Nigamp - Ultra-Lightweight MP3 Player\n";
         std::cout << "======================================\n";
+#ifdef _WIN32
         std::cout << "Global Hotkeys (work anywhere):\n";
         std::cout << "  Ctrl+Alt+N      - Next track\n";
         std::cout << "  Ctrl+Alt+P      - Previous track\n";
@@ -167,6 +198,14 @@ public:
         std::cout << "  Ctrl+Plus       - Volume up\n";
         std::cout << "  Ctrl+Minus      - Volume down\n";
         std::cout << "  Ctrl+Escape     - Quit\n";
+#else
+        std::cout << "Terminal Hotkeys (when terminal has focus):\n";
+        std::cout << "  N/n             - Next track\n";
+        std::cout << "  P/p             - Previous track\n";
+        std::cout << "  Space/R/r       - Pause/Resume\n";
+        std::cout << "  +/-             - Volume up/down\n";
+        std::cout << "  Q/q/ESC         - Quit\n";
+#endif
         std::cout << "======================================\n\n";
         
         bool loaded = false;
@@ -180,8 +219,9 @@ public:
                 m_current_directory = path;
             }
         } else {
-            loaded = load_directory("C:\\Music");
-            m_current_directory = "C:\\Music";
+            std::string default_dir = get_default_music_directory();
+            loaded = load_directory(default_dir);
+            m_current_directory = default_dir;
         }
         
         if (!loaded) {
@@ -726,10 +766,17 @@ int main(int argc, char* argv[]) {
                 std::cout << "  --preview, -p                Play only first 10 seconds of each song\n";
                 std::cout << "  --help, -h                   Show this help message\n";
                 std::cout << "\nUsage Examples:\n";
-                std::cout << "  nigamp                       Scan C:\\Music directory for MP3/WAV files\n";
+#ifdef _WIN32
+                std::cout << "  nigamp                       Scan default Music directory for MP3/WAV files\n";
                 std::cout << "  nigamp --file song.mp3       Play single file\n";
                 std::cout << "  nigamp --folder \"C:\\Music\"   Play all files from folder\n";
+#else
+                std::cout << "  nigamp                       Scan ~/Music or current directory for MP3/WAV files\n";
+                std::cout << "  nigamp --file song.mp3       Play single file\n";
+                std::cout << "  nigamp --folder \"/path/to/Music\"   Play all files from folder\n";
+#endif
                 std::cout << "  nigamp -f song.mp3 -p        Play single file in preview mode\n";
+#ifdef _WIN32
                 std::cout << "\nGlobal Hotkeys (work anywhere):\n";
                 std::cout << "  Ctrl+Alt+N                   Next track\n";
                 std::cout << "  Ctrl+Alt+P                   Previous track\n";
@@ -742,6 +789,14 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Ctrl+R                       Pause/Resume\n";
                 std::cout << "  Ctrl+Plus/Minus              Volume control\n";
                 std::cout << "  Ctrl+Escape                  Quit\n";
+#else
+                std::cout << "\nTerminal Hotkeys (when terminal has focus):\n";
+                std::cout << "  N/n                          Next track\n";
+                std::cout << "  P/p                          Previous track\n";
+                std::cout << "  Space/R/r                    Pause/Resume\n";
+                std::cout << "  +/-                          Volume control\n";
+                std::cout << "  Q/q/ESC                      Quit\n";
+#endif
                 return 0;
             } else {
                 std::cerr << "Unknown argument: " << arg << "\n";

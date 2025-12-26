@@ -36,7 +36,9 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 
 ## Controls
 
-### Global Hotkeys (Work Anywhere)
+### Windows
+
+**Global Hotkeys (Work Anywhere)**
 - **Ctrl+Alt+N**: Next track
 - **Ctrl+Alt+P**: Previous track
 - **Ctrl+Alt+R**: Pause/Resume
@@ -44,7 +46,7 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 - **Ctrl+Alt+Minus**: Volume down
 - **Ctrl+Alt+Escape**: Quit
 
-### Local Hotkeys (Console Focused)
+**Local Hotkeys (Console Focused)**
 - **Ctrl+N**: Next track
 - **Ctrl+P**: Previous track
 - **Ctrl+R**: Pause/Resume
@@ -52,21 +54,34 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 - **Ctrl+Minus**: Volume down
 - **Ctrl+Escape**: Quit
 
+### Ubuntu/Linux
+
+**Terminal Hotkeys** (works when terminal has focus)
+- **N/n**: Next track
+- **P/p**: Previous track
+- **Space/R/r**: Pause/Resume
+- **+/-**: Volume up/down
+- **Q/q/ESC**: Quit
+
+Note: On Linux, hotkeys work when the terminal window has focus. For global hotkeys, you may need to use a window manager hotkey configuration tool.
+
 ## Usage
 
 ### Command Line Options
 
 ```bash
-# Basic usage - scans C:\Music directory
+# Basic usage - scans default music directory
+# Windows: C:\Music
+# Linux: ~/Music (or current directory)
 nigamp
 
 # Play specific file
 nigamp --file song.mp3
-nigamp -f "C:\Music\My Song.mp3"
+nigamp -f "/path/to/My Song.mp3"
 
 # Play all files from directory  
-nigamp --folder "C:\Music"
-nigamp -d "C:\My Music Collection"
+nigamp --folder "/path/to/Music"
+nigamp -d "/home/user/Music"
 
 # Preview mode - play first 10 seconds of each song
 nigamp --preview
@@ -74,7 +89,7 @@ nigamp -p
 
 # Combine options
 nigamp -f song.mp3 -p    # Preview single file
-nigamp -d "C:\Music" -p  # Preview entire directory
+nigamp -d "/path/to/Music" -p  # Preview entire directory
 
 # Help
 nigamp --help
@@ -83,7 +98,7 @@ nigamp -h
 
 ### What the App Does
 
-1. **Automatic Directory Scanning**: When you run nigamp without arguments, it automatically scans `C:\Music` for MP3 and WAV files
+1. **Automatic Directory Scanning**: When you run nigamp without arguments, it automatically scans the default music directory (`C:\Music` on Windows, `~/Music` or current directory on Linux) for MP3 and WAV files
 2. **Intelligent Playlist Creation**: Creates a shuffled playlist using the Fisher-Yates algorithm for truly random playback
 3. **Duration-Based Playback**: 
    - Reads actual song duration from audio files for precise timing
@@ -106,6 +121,7 @@ nigamp -h
 
 ### Typical Workflow
 
+#### Windows
 1. **Setup**: Place your MP3/WAV files in `C:\Music` (or specify different directory)
 2. **Launch**: Run `nigamp` from command prompt
 3. **Background Operation**: Minimize console - music continues playing
@@ -113,22 +129,38 @@ nigamp -h
 5. **Volume**: Use `Ctrl+Alt+Plus/Minus` to adjust volume on the fly
 6. **Pause**: Use `Ctrl+Alt+R` to pause/resume without switching applications
 
+#### Ubuntu/Linux
+1. **Setup**: Place your MP3/WAV files in `~/Music` or any directory
+2. **Launch**: Run `./build/nigamp` from terminal
+3. **Control**: Use `N`, `P`, `Space`, `+/-`, `Q` keys when terminal has focus
+4. **Volume**: Use `+/-` to adjust volume
+5. **Pause**: Use `Space` or `R` to pause/resume
+
 ## Building
 
 ### Prerequisites
 
+#### Windows
 1. **MinGW-w64** with GCC
 2. **CMake** 3.16 or higher
 3. **Git** (for downloading Google Test)
+
+#### Ubuntu/Linux
+1. **GCC/G++** (build-essential package)
+2. **CMake** 3.16 or higher
+3. **ALSA development libraries** (libasound2-dev)
+4. **Git** (for downloading Google Test)
 
 ### Required Libraries
 
 The project uses header-only libraries that are included in the repository:
 
 1. **minimp3.h** - Header-only MP3 decoder (included)
-2. **dr_wav.h** - Header-only WAV decoder (run `copy_drwav.bat` to download)
+2. **dr_wav.h** - Header-only WAV decoder (run setup script to download)
 
 ### Build Commands
+
+#### Windows
 
 ```bash
 # Setup dependencies (run once)
@@ -150,6 +182,32 @@ build\test_music_player_simulation.exe
 build\nigamp_tests.exe
 ```
 
+#### Ubuntu/Linux
+
+```bash
+# Install dependencies
+sudo apt-get update
+sudo apt-get install -y build-essential cmake libasound2-dev
+
+# Setup dependencies (run once)
+./setup_libraries.sh
+
+# Standard build
+./build.sh
+
+# Manual CMake build
+cmake -B build
+cmake --build build
+
+# Run tests
+ctest --test-dir build --verbose
+
+# Run specific tests
+./build/test_hotkey_handler
+./build/test_music_player_simulation
+./build/nigamp_tests
+```
+
 ### VSCode Integration
 
 The project includes full VSCode integration with:
@@ -166,10 +224,9 @@ The project includes full VSCode integration with:
 - **Reindexing Thread**: Background directory scanning every 10 minutes
 
 ### Audio Pipeline
-The audio engine uses DirectSound with circular buffering for minimal latency:
-```
-File → Decoder → AudioBuffer → DirectSound → Speakers
-```
+The audio engine uses platform-specific APIs with circular buffering for minimal latency:
+- **Windows**: `File → Decoder → AudioBuffer → DirectSound → Speakers`
+- **Linux**: `File → Decoder → AudioBuffer → ALSA → Speakers`
 
 ### Memory Optimization
 - Streaming audio processing (no full file loading)
@@ -181,10 +238,14 @@ File → Decoder → AudioBuffer → DirectSound → Speakers
 
 ### Core Components
 
-- **AudioEngine** (`audio_engine.hpp/cpp`): DirectSound-based audio output with ~50ms latency target
+- **AudioEngine** (`audio_engine.hpp/cpp`): 
+  - Windows: DirectSound-based audio output with ~50ms latency target
+  - Linux: ALSA-based audio output with ~50ms latency target
 - **Decoder** (`mp3_decoder.hpp/cpp`): Pluggable MP3/WAV decoder using minimp3 and dr_wav  
 - **Playlist** (`playlist.hpp/cpp`): Fisher-Yates shuffle algorithm with bidirectional navigation
-- **HotkeyHandler** (`hotkey_handler.hpp/cpp`): Windows global hotkey system using RegisterHotKey API
+- **HotkeyHandler** (`hotkey_handler.hpp/cpp`): 
+  - Windows: Global hotkey system using RegisterHotKey API
+  - Linux: Terminal-based input handler
 - **FileScanner** (`file_scanner.hpp/cpp`): Directory scanning with MP3/WAV format detection
 - **MusicPlayer** (`main.cpp`): Main application orchestrating all components
 
