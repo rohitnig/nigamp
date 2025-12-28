@@ -56,14 +56,22 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 
 ### Ubuntu/Linux
 
-**Terminal Hotkeys** (works when terminal has focus)
+**Global Hotkeys (Work Anywhere)** - Requires X11 (libx11-dev)
+- **Ctrl+Alt+N**: Next track
+- **Ctrl+Alt+P**: Previous track
+- **Ctrl+Alt+R**: Pause/Resume
+- **Ctrl+Alt+Plus**: Volume up
+- **Ctrl+Alt+Minus**: Volume down
+- **Ctrl+Alt+Escape**: Quit
+
+**Terminal Hotkeys** (works when terminal has focus, fallback if X11 unavailable)
 - **N/n**: Next track
 - **P/p**: Previous track
 - **Space/R/r**: Pause/Resume
 - **+/-**: Volume up/down
 - **Q/q/ESC**: Quit
 
-Note: On Linux, hotkeys work when the terminal window has focus. For global hotkeys, you may need to use a window manager hotkey configuration tool.
+Note: Global hotkeys require X11 and will automatically fall back to terminal input if X11 is not available.
 
 ## Usage
 
@@ -132,9 +140,10 @@ nigamp -h
 #### Ubuntu/Linux
 1. **Setup**: Place your MP3/WAV files in `~/Music` or any directory
 2. **Launch**: Run `./build/nigamp` from terminal
-3. **Control**: Use `N`, `P`, `Space`, `+/-`, `Q` keys when terminal has focus
-4. **Volume**: Use `+/-` to adjust volume
-5. **Pause**: Use `Space` or `R` to pause/resume
+3. **Control**: Use `Ctrl+Alt+N` and `Ctrl+Alt+P` to skip tracks from any application (global hotkeys)
+4. **Volume**: Use `Ctrl+Alt+Plus/Minus` to adjust volume on the fly
+5. **Pause**: Use `Ctrl+Alt+R` to pause/resume without switching applications
+6. **Fallback**: If X11 is not available, use terminal hotkeys (`N`, `P`, `Space`, etc.) when terminal has focus
 
 ## Building
 
@@ -149,7 +158,8 @@ nigamp -h
 1. **GCC/G++** (build-essential package)
 2. **CMake** 3.16 or higher
 3. **ALSA development libraries** (libasound2-dev)
-4. **Git** (for downloading Google Test)
+4. **X11 development libraries** (libx11-dev) - for global hotkeys
+5. **Git** (for downloading Google Test)
 
 ### Required Libraries
 
@@ -187,7 +197,7 @@ build\nigamp_tests.exe
 ```bash
 # Install dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake libasound2-dev
+sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev
 
 # Setup dependencies (run once)
 ./setup_libraries.sh

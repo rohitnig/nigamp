@@ -21,6 +21,16 @@ else
     echo "✓ ALSA libraries found"
 fi
 
+# Check for X11 development libraries
+if ! pkg-config --exists x11; then
+    echo "X11 development libraries not found."
+    echo "Please install with: sudo apt-get install libx11-dev"
+    echo "  (Required for global hotkeys)"
+    echo ""
+else
+    echo "✓ X11 libraries found"
+fi
+
 # Check for CMake
 if ! command -v cmake &> /dev/null; then
     echo "CMake not found."

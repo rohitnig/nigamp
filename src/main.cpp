@@ -199,7 +199,14 @@ public:
         std::cout << "  Ctrl+Minus      - Volume down\n";
         std::cout << "  Ctrl+Escape     - Quit\n";
 #else
-        std::cout << "Terminal Hotkeys (when terminal has focus):\n";
+        std::cout << "Global Hotkeys (work anywhere, if X11 available):\n";
+        std::cout << "  Ctrl+Alt+N      - Next track\n";
+        std::cout << "  Ctrl+Alt+P      - Previous track\n";
+        std::cout << "  Ctrl+Alt+R      - Pause/Resume\n";
+        std::cout << "  Ctrl+Alt+Plus   - Volume up\n";
+        std::cout << "  Ctrl+Alt+Minus  - Volume down\n";
+        std::cout << "  Ctrl+Alt+Escape - Quit\n";
+        std::cout << "\nTerminal Hotkeys (when terminal has focus):\n";
         std::cout << "  N/n             - Next track\n";
         std::cout << "  P/p             - Previous track\n";
         std::cout << "  Space/R/r       - Pause/Resume\n";
@@ -790,6 +797,12 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Ctrl+Plus/Minus              Volume control\n";
                 std::cout << "  Ctrl+Escape                  Quit\n";
 #else
+                std::cout << "\nGlobal Hotkeys (work anywhere, if X11 available):\n";
+                std::cout << "  Ctrl+Alt+N                   Next track\n";
+                std::cout << "  Ctrl+Alt+P                   Previous track\n";
+                std::cout << "  Ctrl+Alt+R                   Pause/Resume\n";
+                std::cout << "  Ctrl+Alt+Plus/Minus          Volume control\n";
+                std::cout << "  Ctrl+Alt+Escape              Quit\n";
                 std::cout << "\nTerminal Hotkeys (when terminal has focus):\n";
                 std::cout << "  N/n                          Next track\n";
                 std::cout << "  P/p                          Previous track\n";
