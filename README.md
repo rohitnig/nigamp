@@ -56,7 +56,11 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 
 ### Ubuntu/Linux
 
-**Global Hotkeys (Work Anywhere)** - Requires X11 (libx11-dev)
+**Media Keys (Work Anywhere, including Wayland)** - Requires libsystemd-dev at build time
+- **Play/Pause, Next, Previous** media keys, and the player controls in the GNOME/KDE top-bar media menu
+- nigamp registers as an MPRIS player (`org.mpris.MediaPlayer2.nigamp`), so tools like `playerctl` work too
+
+**Global Hotkeys (X11 sessions)** - Requires X11 (libx11-dev)
 - **Ctrl+Alt+N**: Next track
 - **Ctrl+Alt+P**: Previous track
 - **Ctrl+Alt+R**: Pause/Resume
@@ -71,7 +75,7 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 - **+/-**: Volume up/down
 - **Q/q/ESC**: Quit
 
-Note: Global hotkeys require X11 and will automatically fall back to terminal input if X11 is not available.
+Note: Ctrl+Alt hotkeys use X11 key grabs. On Wayland sessions (the default on Ubuntu 22.04+, and the only session on Ubuntu 26.04 / GNOME 50) they only fire while an X11 app has focus — use the media keys instead. Ctrl+Alt+Plus is Ctrl+Alt+Shift+= on US layouts; both work. NumLock/CapsLock don't affect the hotkeys.
 
 ## Usage
 
@@ -158,7 +162,8 @@ nigamp -h
 1. **GCC/G++** (build-essential package)
 2. **CMake** 3.16 or higher
 3. **ALSA development libraries** (libasound2-dev)
-4. **X11 development libraries** (libx11-dev) - for global hotkeys
+4. **X11 development libraries** (libx11-dev) - for Ctrl+Alt global hotkeys on X11
+5. **systemd development libraries** (libsystemd-dev) - for media keys / MPRIS (optional)
 5. **Git** (for downloading Google Test)
 
 ### Required Libraries
@@ -197,7 +202,7 @@ build\nigamp_tests.exe
 ```bash
 # Install dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev
+sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev libsystemd-dev
 
 # Setup dependencies (run once)
 ./setup_libraries.sh

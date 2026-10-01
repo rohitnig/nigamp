@@ -31,6 +31,16 @@ else
     echo "✓ X11 libraries found"
 fi
 
+# Check for sd-bus (MPRIS media keys; the only global control on Wayland)
+if ! pkg-config --exists libsystemd; then
+    echo "systemd development libraries not found."
+    echo "Please install with: sudo apt-get install libsystemd-dev"
+    echo "  (Optional: enables media keys and the system media menu)"
+    echo ""
+else
+    echo "✓ libsystemd (sd-bus) found"
+fi
+
 # Check for CMake
 if ! command -v cmake &> /dev/null; then
     echo "CMake not found."

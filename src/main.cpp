@@ -3,6 +3,7 @@
 #include "playlist.hpp"
 #include "hotkey_handler.hpp"
 #include "file_scanner.hpp"
+#include "media_controls.hpp"
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -68,6 +69,7 @@ private:
     }
     std::unique_ptr<IPlaylist> m_playlist;
     std::unique_ptr<IHotkeyHandler> m_hotkey_handler;
+    std::unique_ptr<IMediaControls> m_media_controls;
     std::unique_ptr<IFileScanner> m_file_scanner;
     std::unique_ptr<IAudioDecoder> m_current_decoder;
     
@@ -110,6 +112,7 @@ public:
         m_audio_engine = create_audio_engine();
         m_playlist = create_playlist();
         m_hotkey_handler = create_hotkey_handler();
+        m_media_controls = create_media_controls();
         m_file_scanner = create_file_scanner();
         m_last_index_time = std::chrono::steady_clock::now();
     }
@@ -129,14 +132,19 @@ public:
         });
         
         if (!m_hotkey_handler->register_hotkeys()) {
-            std::cout << "Warning: Failed to register some hotkeys (try running as administrator)\n";
-            std::cout << "Player will work without global hotkeys\n";
+            std::cout << "Warning: Some global hotkeys are unavailable; the others still work\n";
         } else {
             std::cout << "Global hotkeys registered successfully!\n";
         }
         
         // Start the message loop immediately after hotkey registration
         m_hotkey_handler->process_messages();
+        
+        // Media keys and desktop media widgets (MPRIS on Linux); optional
+        if (m_media_controls->initialize([this](HotkeyAction action) { handle_hotkey(action); })) {
+            std::cout << "Media controls enabled (media keys, system media menu)\n";
+            m_media_controls->set_volume(m_volume);
+        }
         
         return true;
     }
@@ -208,6 +216,8 @@ public:
         std::cout << "  Ctrl+Alt+Plus   - Volume up\n";
         std::cout << "  Ctrl+Alt+Minus  - Volume down\n";
         std::cout << "  Ctrl+Alt+Escape - Quit\n";
+        std::cout << "\nMedia Keys (work anywhere, including Wayland):\n";
+        std::cout << "  Play/Pause, Next, Previous, and the system media menu\n";
         std::cout << "\nTerminal Hotkeys (when terminal has focus):\n";
         std::cout << "  N/n             - Next track\n";
         std::cout << "  P/p             - Previous track\n";
@@ -364,10 +374,12 @@ private:
         if (m_audio_engine->is_playing()) {
             m_audio_engine->pause();
             m_is_paused = true;
+            m_media_controls->set_playback_status(PlaybackStatus::PAUSED);
             std::cout << "Paused\n";
         } else {
             m_audio_engine->resume();
             m_is_paused = false;
+            m_media_controls->set_playback_status(PlaybackStatus::PLAYING);
             std::cout << "Resumed\n";
         }
     }
@@ -375,6 +387,7 @@ private:
     void adjust_volume(float delta) {
         m_volume = std::clamp(m_volume + delta, 0.0f, 1.0f);
         m_audio_engine->set_volume(m_volume);
+        m_media_controls->set_volume(m_volume);
         std::cout << "Volume: " << static_cast<int>(m_volume * 100) << "%\n";
     }
     
@@ -424,6 +437,9 @@ private:
             ERROR_LOG("Failed to start audio engine");
             return;
         }
+        
+        m_media_controls->set_track({m_current_song->title, m_current_song->file_path, m_current_song_duration});
+        m_media_controls->set_playback_status(m_is_paused ? PlaybackStatus::PAUSED : PlaybackStatus::PLAYING);
         
         m_playback_thread = std::thread(&MusicPlayer::playback_loop, this);
     }
@@ -653,6 +669,11 @@ private:
         // Signal all threads to stop
         m_should_quit = true;
         
+        // Stop taking desktop media commands before tearing down playback
+        if (m_media_controls) {
+            m_media_controls->shutdown();
+        }
+        
         // Stop audio playback first
         if (m_audio_engine) {
             m_audio_engine->stop();
@@ -758,6 +779,8 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Ctrl+Alt+R                   Pause/Resume\n";
                 std::cout << "  Ctrl+Alt+Plus/Minus          Volume control\n";
                 std::cout << "  Ctrl+Alt+Escape              Quit\n";
+                std::cout << "\nMedia Keys (work anywhere, including Wayland):\n";
+                std::cout << "  Play/Pause, Next, Previous   Via the system media controls\n";
                 std::cout << "\nTerminal Hotkeys (when terminal has focus):\n";
                 std::cout << "  N/n                          Next track\n";
                 std::cout << "  P/p                          Previous track\n";

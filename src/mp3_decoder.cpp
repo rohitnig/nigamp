@@ -2,9 +2,10 @@
 #include <filesystem>
 #include <algorithm>
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 #define MINIMP3_IMPLEMENTATION
 #include "../third_party/minimp3.h"
@@ -14,21 +15,125 @@
 
 namespace nigamp {
 
+namespace {
+
+// Size of an ID3v2 tag at the start of the file (0 if none). Tags often embed album
+// art, so jumping over them is far cheaper than scanning them for frame sync.
+uint64_t id3v2_tag_size(FILE* file) {
+    unsigned char header[10];
+    if (std::fread(header, 1, sizeof(header), file) != sizeof(header) ||
+        std::memcmp(header, "ID3", 3) != 0) {
+        return 0;
+    }
+    // Size is a 28-bit "syncsafe" integer: 7 bits per byte, high bit always clear
+    for (int i = 6; i < 10; ++i) {
+        if (header[i] & 0x80) {
+            return 0;
+        }
+    }
+    uint64_t size = (uint64_t(header[6]) << 21) | (uint64_t(header[7]) << 14) |
+                    (uint64_t(header[8]) << 7) | uint64_t(header[9]);
+    size += 10;                 // header
+    if (header[5] & 0x10) {
+        size += 10;             // footer present
+    }
+    return size;
+}
+
+}  // namespace
+
 struct Mp3Decoder::Impl {
+    // Stream the file through a fixed window instead of loading it whole, so memory
+    // use is the same for a 3MB and a 40MB file.
+    static constexpr size_t kBufferSize = 64 * 1024;
+    // minimp3 validates sync by matching several consecutive frames (max ~1.4KB each),
+    // so keep at least this much unread data in the window while the file has more.
+    static constexpr size_t kMinAvailable = 16 * 1024;
+    // Kept when no frame sync is found in a full window: a header split at the end
+    static constexpr size_t kMaxFrameBytes = 2048;
+    
     AudioFormat format;
     bool is_open = false;
     bool is_eof = false;
     double duration = 0.0;
     
     mp3dec_t mp3d;
-    std::vector<uint8_t> file_data;
-    size_t data_offset = 0;
-    size_t first_frame_offset = 0;
+    FILE* file = nullptr;
+    uint64_t file_size = 0;
+    uint64_t first_frame_offset = 0;
     std::string file_path;
+    
+    std::vector<uint8_t> window;
+    size_t window_pos = 0;          // next unread byte in window
+    size_t window_len = 0;          // valid bytes in window
+    uint64_t window_file_offset = 0; // file offset of window[0]
+    bool file_eof = false;
 
     // Samples from the last decoded frame that did not fit in the caller's buffer.
     std::vector<int16_t> leftover;
     bool stream_done = false;
+    
+    size_t available() const {
+        return window_len - window_pos;
+    }
+    
+    uint64_t position() const {
+        return window_file_offset + window_pos;
+    }
+    
+    void fill() {
+        if (file_eof || available() >= kMinAvailable) {
+            return;
+        }
+        // Slide unread bytes to the front, then top up from the file
+        std::memmove(window.data(), window.data() + window_pos, available());
+        window_file_offset += window_pos;
+        window_len = available();
+        window_pos = 0;
+        while (window_len < window.size()) {
+            const size_t n = std::fread(window.data() + window_len, 1, window.size() - window_len, file);
+            if (n == 0) {
+                file_eof = true;
+                break;
+            }
+            window_len += n;
+        }
+    }
+    
+    // Restart decoding at a file offset (also resets the decoder's bit reservoir)
+    bool rewind_to(uint64_t offset) {
+        if (std::fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+            return false;
+        }
+        window_pos = 0;
+        window_len = 0;
+        window_file_offset = offset;
+        file_eof = false;
+        mp3dec_init(&mp3d);
+        return true;
+    }
+    
+    // Decodes the next frame. Returns samples per channel, 0 when only junk or an
+    // invalid frame was skipped, or -1 at the end of the stream.
+    int next_frame(short* pcm, mp3dec_frame_info_t* info) {
+        fill();
+        if (available() == 0) {
+            return -1;
+        }
+        
+        const int samples = mp3dec_decode_frame(&mp3d, window.data() + window_pos, available(), pcm, info);
+        if (info->frame_bytes == 0) {
+            if (file_eof) {
+                return -1;  // No further frames in the remaining data
+            }
+            // No sync anywhere in the window: drop it except a tail that may hold a split header
+            window_pos = window_len - std::min(available(), kMaxFrameBytes);
+            return 0;
+        }
+        
+        window_pos += info->frame_bytes;
+        return samples;
+    }
 };
 
 Mp3Decoder::Mp3Decoder() : m_impl(std::make_unique<Impl>()) {}
@@ -38,74 +143,58 @@ Mp3Decoder::~Mp3Decoder() {
 }
 
 bool Mp3Decoder::open(const std::string& file_path) {
-    if (!std::filesystem::exists(file_path)) {
+    close();
+    
+    std::error_code ec;
+    const uint64_t file_size = std::filesystem::file_size(file_path, ec);
+    if (ec) {
         std::cerr << "File does not exist: " << file_path << "\n";
         return false;
     }
     
-    // Read entire file into memory
-    std::ifstream file(file_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
+    m_impl->file = std::fopen(file_path.c_str(), "rb");
+    if (!m_impl->file) {
         std::cerr << "Failed to open MP3 file: " << file_path << "\n";
         return false;
     }
+    m_impl->file_size = file_size;
+    m_impl->window.assign(Impl::kBufferSize, 0);
     
-    size_t file_size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    
-    m_impl->file_data.resize(file_size);
-    if (!file.read(reinterpret_cast<char*>(m_impl->file_data.data()), file_size)) {
-        std::cerr << "Failed to read MP3 file data\n";
-        return false;
+    uint64_t audio_start = id3v2_tag_size(m_impl->file);
+    if (audio_start >= file_size) {
+        audio_start = 0;
     }
-    file.close();
     
-    // Initialize minimp3
-    mp3dec_init(&m_impl->mp3d);
-    
-    // Try to decode first frame to get format info
+    // Probe for the first decodable frame to learn the format
     mp3dec_frame_info_t info;
     short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
-    size_t offset = 0;
     int samples = 0;
-    
-    // Search for a valid MP3 frame (skip ID3 tags / junk at start).
-    // Some real-world files can have large tags, so don't hard-stop at 32KB.
-    while (offset < file_size) {
-        samples = mp3dec_decode_frame(&m_impl->mp3d, 
-                                     m_impl->file_data.data() + offset, 
-                                     file_size - offset, 
-                                     pcm, &info);
-        if (samples > 0) {
-            // Found valid frame
-            break;
-        }
-        if (info.frame_bytes > 0) {
-            offset += info.frame_bytes;
-        } else {
-            // Skip byte by byte if no frame detected
-            offset++;
-        }
+    uint64_t frame_offset = audio_start;
+    if (m_impl->rewind_to(audio_start)) {
+        do {
+            frame_offset = m_impl->position();
+            samples = m_impl->next_frame(pcm, &info);
+        } while (samples == 0);
     }
     
-    if (samples == 0) {
+    if (samples <= 0) {
         // For test files, provide default format
         std::cerr << "Failed to decode MP3 frame\n";
         m_impl->format.sample_rate = 44100;
         m_impl->format.channels = 2;
         m_impl->format.bits_per_sample = 16;
         m_impl->duration = 1.0;  // 1 second default
-        m_impl->first_frame_offset = 0;
+        m_impl->first_frame_offset = audio_start;
     } else {
         // Use actual MP3 format
         m_impl->format.sample_rate = info.hz;
         m_impl->format.channels = info.channels;
         m_impl->format.bits_per_sample = 16;
-        m_impl->first_frame_offset = offset;
+        m_impl->first_frame_offset = frame_offset;
         
-        // Estimate duration based on bitrate
+        // Estimate duration from the bitrate of the first frame (exact for CBR)
         if (info.bitrate_kbps > 0) {
-            m_impl->duration = static_cast<double>(file_size * 8) / (info.bitrate_kbps * 1000);
+            m_impl->duration = static_cast<double>((file_size - audio_start) * 8) / (info.bitrate_kbps * 1000);
         } else {
             // Fallback duration estimation
             m_impl->duration = 180.0; // 3 minutes default
@@ -118,13 +207,8 @@ bool Mp3Decoder::open(const std::string& file_path) {
     m_impl->stream_done = false;
     m_impl->leftover.clear();
     
-    // Reset decoder for actual playback
-    mp3dec_init(&m_impl->mp3d);
-
-    // Start decoding from the first detected frame to avoid re-scanning tags/junk.
-    m_impl->data_offset = m_impl->first_frame_offset;
-    
-    // MP3 successfully opened - info available in format
+    // Start playback from the first detected frame to avoid re-scanning tags/junk
+    m_impl->rewind_to(m_impl->first_frame_offset);
     
     return true;
 }
@@ -144,28 +228,16 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
     leftover.erase(leftover.begin(), leftover.begin() + carried);
     
     while (buffer.size() < max_samples && !m_impl->stream_done) {
-        if (m_impl->data_offset >= m_impl->file_data.size()) {
-            m_impl->stream_done = true;
-            break;
-        }
-        
         mp3dec_frame_info_t info;
         short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
         
-        int samples = mp3dec_decode_frame(&m_impl->mp3d, 
-                                         m_impl->file_data.data() + m_impl->data_offset, 
-                                         m_impl->file_data.size() - m_impl->data_offset, 
-                                         pcm, &info);
-        
+        const int samples = m_impl->next_frame(pcm, &info);
+        if (samples < 0) {
+            m_impl->stream_done = true;
+            break;
+        }
         if (samples == 0) {
-            if (info.frame_bytes == 0) {
-                // End of file or no more frames
-                m_impl->stream_done = true;
-                break;
-            }
-            // Skip invalid frame
-            m_impl->data_offset += info.frame_bytes;
-            continue;
+            continue;  // Skipped junk or an invalid frame
         }
         
         // samples is PER CHANNEL; pcm is interleaved (L,R,L,R...)
@@ -174,8 +246,6 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
         buffer.insert(buffer.end(), pcm, pcm + to_copy);
         // Keep the rest of the frame for the next call instead of dropping it
         leftover.assign(pcm + to_copy, pcm + total_samples);
-        
-        m_impl->data_offset += info.frame_bytes;
     }
     
     m_impl->is_eof = m_impl->stream_done && leftover.empty();
@@ -184,12 +254,15 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
 }
 
 void Mp3Decoder::close() {
-    if (m_impl->is_open) {
-        m_impl->file_data.clear();
-        m_impl->leftover.clear();
-        m_impl->data_offset = 0;
-        m_impl->is_open = false;
+    if (m_impl->file) {
+        std::fclose(m_impl->file);
+        m_impl->file = nullptr;
     }
+    std::vector<uint8_t>().swap(m_impl->window);  // Release the window's memory
+    m_impl->leftover.clear();
+    m_impl->window_pos = 0;
+    m_impl->window_len = 0;
+    m_impl->is_open = false;
 }
 
 AudioFormat Mp3Decoder::get_format() const {
@@ -207,8 +280,7 @@ bool Mp3Decoder::seek(double seconds) {
     
     // Simple seek implementation: reset to beginning if seeking to 0
     if (seconds <= 0.0) {
-        mp3dec_init(&m_impl->mp3d);
-        m_impl->data_offset = m_impl->first_frame_offset;
+        m_impl->rewind_to(m_impl->first_frame_offset);
         m_impl->leftover.clear();
         m_impl->stream_done = false;
         m_impl->is_eof = false;

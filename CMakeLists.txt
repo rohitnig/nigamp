@@ -52,6 +52,7 @@ if(WIN32)
     list(APPEND SOURCES
         src/audio_engine.cpp
         src/hotkey_handler.cpp
+        src/null_media_controls.cpp
     )
 elseif(UNIX AND NOT APPLE)
     # Linux
@@ -59,6 +60,18 @@ elseif(UNIX AND NOT APPLE)
         src/alsa_audio_engine.cpp
         src/linux_hotkey_handler.cpp
     )
+
+    # MPRIS media controls (media keys, GNOME media widget) need sd-bus from libsystemd.
+    # This is the only working global control on Wayland sessions; optional otherwise.
+    find_path(SDBUS_INCLUDE_DIR systemd/sd-bus.h)
+    find_library(SYSTEMD_LIBRARY systemd)
+    if(SDBUS_INCLUDE_DIR AND SYSTEMD_LIBRARY)
+        list(APPEND SOURCES src/mpris_media_controls.cpp)
+        set(NIGAMP_HAS_MPRIS ON)
+    else()
+        list(APPEND SOURCES src/null_media_controls.cpp)
+        message(WARNING "libsystemd (sd-bus) not found - media keys/MPRIS disabled. Install libsystemd-dev: sudo apt-get install libsystemd-dev")
+    endif()
 endif()
 
 # Headers
@@ -68,6 +81,7 @@ set(HEADERS
     include/playlist.hpp
     include/hotkey_handler.hpp
     include/file_scanner.hpp
+    include/media_controls.hpp
     include/types.hpp
 )
 
@@ -90,6 +104,11 @@ elseif(UNIX AND NOT APPLE)
         message(STATUS "Building for Linux with ALSA")
     else()
         message(FATAL_ERROR "ALSA library not found. Install libasound2-dev: sudo apt-get install libasound2-dev")
+    endif()
+    if(NIGAMP_HAS_MPRIS)
+        target_include_directories(nigamp PRIVATE ${SDBUS_INCLUDE_DIR})
+        target_link_libraries(nigamp ${SYSTEMD_LIBRARY})
+        message(STATUS "libsystemd found - MPRIS media controls enabled")
     endif()
     if(X11_LIBRARY)
         target_link_libraries(nigamp ${X11_LIBRARY})

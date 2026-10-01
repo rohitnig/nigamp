@@ -18,7 +18,8 @@ This is a cross-platform C++ project using CMake. Targets <10MB RAM usage and pr
 - build-essential (GCC/G++)
 - CMake 3.16 or higher
 - libasound2-dev (ALSA audio library)
-- libx11-dev (X11 for global hotkeys)
+- libx11-dev (X11 for Ctrl+Alt global hotkeys)
+- libsystemd-dev (sd-bus for MPRIS media keys; optional, CMake falls back to a no-op)
 - Git (for Google Test)
 
 **Shared Dependencies:**
@@ -51,7 +52,7 @@ ctest --test-dir build --verbose
 ```bash
 # Install system dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev git
+sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev libsystemd-dev git
 
 # Setup dependencies (run once)
 ./setup_libraries.sh
@@ -124,6 +125,9 @@ The application follows a dependency injection pattern with interface-based desi
 - **HotkeyHandler** (`include/hotkey_handler.hpp`) - Platform-specific hotkey system
   - Windows: `src/hotkey_handler.cpp` (RegisterHotKey API)
   - Linux: `src/linux_hotkey_handler.cpp` (X11 global hotkeys + terminal fallback)
+- **MediaControls** (`include/media_controls.hpp`) - Desktop media-key integration; commands arrive through the same `HotkeyCallback` as hotkeys, and `MusicPlayer` pushes track/status/volume to it
+  - Linux: `src/mpris_media_controls.cpp` (MPRIS over sd-bus) when libsystemd is found
+  - Windows / no libsystemd: `src/null_media_controls.cpp`
 - **FileScanner** (`include/file_scanner.hpp`, `src/file_scanner.cpp`) - Directory scanning with MP3/WAV format detection
 - **MusicPlayer** (`src/main.cpp`) - Main application orchestrating all components
 
@@ -172,10 +176,17 @@ The ALSA device buffer is 500ms with 50ms periods; at most ~500ms more is queued
 ### Hotkey System
 **Windows**: Global hotkeys (Ctrl+Alt+*) and local console hotkeys (Ctrl+*) using RegisterHotKey API.
 
-**Linux**: Global hotkeys (Ctrl+Alt+*) via X11 with automatic fallback to terminal input (N/P/Space/etc.) if X11 is unavailable.
+**Linux**: Three input paths, all feeding `handle_hotkey()`:
+- **MPRIS** (media keys, GNOME media menu, `playerctl`): the only global control that works on Wayland. sd-bus objects are single-threaded, so only the bus thread touches `sd_bus*`; other threads update state under `state_mutex` and set `dirty`, and the bus thread emits `PropertiesChanged`.
+- **X11 Ctrl+Alt grabs** on the root window. Under Wayland (Ubuntu 26.04/GNOME 50 is Wayland-only) they only fire while an XWayland window has focus, and XTEST-injected keys go to the compositor, so test them on a nested X server: `Xephyr :99 -ac & DISPLAY=:99 xdotool key ctrl+alt+n`. Never inject keys on the user's live session.
+- **Terminal keys** (N/P/Space/Q) when the terminal has focus.
 
 ### Memory Management
 Targets <10MB RAM through streaming audio, minimal buffering, and efficient playlist structures. Uses smart pointers throughout.
+
+- `Mp3Decoder` reads the file through a fixed 64KB window (`Impl::fill()`/`next_frame()`); never load whole files — a 44MB MP3 used to cost 44MB of RSS. Measured: ~12.5MB total RSS / ~2.2MB private regardless of file size; the rest is shared libraries (libc, libstdc++, ALSA, PipeWire, libsystemd, X11).
+- ID3v2 tags are skipped by reading their header size (they can hold MBs of album art) and excluded from the bitrate-based duration estimate.
+- To verify decoder changes, decode real files with the old and new decoder and compare PCM checksums — output must be byte-identical.
 
 ### File Handling
 Supports MP3 (via minimp3) and WAV (via dr_wav) with automatic format detection. Includes background directory reindexing.
@@ -211,7 +222,7 @@ All dependencies are header-only or statically linked:
 - Google Test - Unit testing framework (fetched by CMake)
 - Platform-specific system libraries:
   - **Windows**: DirectSound, User32, WinMM, OLE32, Shlwapi
-  - **Linux**: ALSA (libasound2), X11 (optional, for global hotkeys)
+  - **Linux**: ALSA (libasound2), X11 (optional, for global hotkeys), libsystemd (optional, for MPRIS)
 
 ## Debug Logging System
 
@@ -249,6 +260,9 @@ The `CompletionCallback` mechanism includes dual verification methods:
 **Linux (ALSA + X11):**
 - ALSA PCM handle with period-based buffering for low-latency playback
 - Global hotkeys via X11 `XGrabKey` with automatic fallback to terminal input
+- `XGrabKey` always returns 1 — grab conflicts (`BadAccess`) only arrive via the X error handler after `XSync`
+- Grabs match the exact modifier state, so each key is grabbed with every CapsLock/NumLock combination; "Plus" is also grabbed with Shift (it's Shift+= on US layouts)
+- Ctrl+Alt+keypad +/- are reserved by the X server (`XF86Next/Prev_VMode`) and can't be grabbed
 - Terminal input uses raw mode (`termios`) with non-blocking character reading
 - Dynamic linking to system libraries (libasound2, libx11)
 - Gracefully degrades when X11 is unavailable (headless/Wayland environments)
@@ -307,7 +321,7 @@ The codebase uses a clean conditional compilation system for debug output:
 ### Build System Integration
 The project uses CMake with platform detection:
 - **Windows**: Automatically detects MinGW compiler paths, enables static linking for standalone deployment
-- **Linux**: Uses system GCC/G++ compiler, links ALSA and optionally X11
+- **Linux**: Uses system GCC/G++ compiler, links ALSA and optionally X11 and libsystemd
 - Required third-party headers are validated during CMake configuration
 - Platform-specific source files selected automatically (audio_engine.cpp vs alsa_audio_engine.cpp, etc.)
 - Test infrastructure is integrated with CTest for automated validation

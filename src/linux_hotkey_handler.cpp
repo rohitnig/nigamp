@@ -5,6 +5,7 @@
 #include <atomic>
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -13,9 +14,47 @@
 
 namespace nigamp {
 
+namespace {
+
+struct KeyBinding {
+    KeySym keysym;
+    HotkeyAction action;
+    const char* label;
+    bool also_with_shift;  // e.g. "Plus" is Shift+= on most layouts
+};
+
+// All global hotkeys are Ctrl+Alt+<key>. Keypad +/- are deliberately absent: X servers
+// reserve Ctrl+Alt+KP_Add/KP_Subtract for video-mode switching (XF86Next/Prev_VMode).
+const KeyBinding kBindings[] = {
+    {XK_n,           HotkeyAction::NEXT_TRACK,     "Ctrl+Alt+N",        false},
+    {XK_p,           HotkeyAction::PREVIOUS_TRACK, "Ctrl+Alt+P",        false},
+    {XK_r,           HotkeyAction::PAUSE_RESUME,   "Ctrl+Alt+R",        false},
+    {XK_equal,       HotkeyAction::VOLUME_UP,      "Ctrl+Alt+Plus",     true},
+    {XK_minus,       HotkeyAction::VOLUME_DOWN,    "Ctrl+Alt+Minus",    false},
+    {XK_Escape,      HotkeyAction::QUIT,           "Ctrl+Alt+Escape",   false},
+};
+
+constexpr unsigned int kHotkeyMods = ControlMask | Mod1Mask;
+
+// XGrabKey reports failures (e.g. BadAccess when another client owns the combo)
+// asynchronously through the error handler, not through its return value.
+std::atomic<bool> g_grab_failed{false};
+
+int grab_error_handler(Display*, XErrorEvent* error) {
+    if (error->request_code == 33 /* X_GrabKey */) {
+        g_grab_failed = true;
+    }
+    return 0;
+}
+
+}  // namespace
+
 struct LinuxHotkeyHandler::Impl {
     Display* display = nullptr;
-    Window window = 0;
+    // Grabs go on the root window so they fire regardless of which window has focus
+    Window root = 0;
+    unsigned int numlock_mask = 0;
+    bool hotkeys_grabbed = false;
     HotkeyCallback callback;
     std::thread message_thread;
     std::thread console_input_thread;
@@ -23,75 +62,73 @@ struct LinuxHotkeyHandler::Impl {
     struct termios original_termios;
     bool terminal_configured = false;
     bool x11_available = false;
-    
-    static constexpr int HOTKEY_NEXT = 1;
-    static constexpr int HOTKEY_PREV = 2;
-    static constexpr int HOTKEY_PAUSE = 3;
-    static constexpr int HOTKEY_VOLUME_UP = 4;
-    static constexpr int HOTKEY_VOLUME_DOWN = 5;
-    static constexpr int HOTKEY_QUIT = 6;
-    
+
     bool create_display() {
         display = XOpenDisplay(nullptr);
         if (!display) {
             return false;
         }
+        root = DefaultRootWindow(display);
+        numlock_mask = find_numlock_mask();
         return true;
     }
-    
-    bool create_window() {
-        int screen = DefaultScreen(display);
-        Window root = RootWindow(display, screen);
-        
-        // Create an invisible window for receiving events
-        XSetWindowAttributes attrs;
-        attrs.override_redirect = True;
-        attrs.event_mask = KeyPressMask;
-        
-        window = XCreateWindow(
-            display, root,
-            -1, -1, 1, 1, 0,  // x, y, width, height, border
-            CopyFromParent,   // depth
-            InputOnly,        // class
-            CopyFromParent,   // visual
-            CWOverrideRedirect | CWEventMask,
-            &attrs
-        );
-        
-        if (!window) {
-            return false;
+
+    // NumLock is usually Mod2, but the modifier map is the only reliable source
+    unsigned int find_numlock_mask() {
+        unsigned int mask = 0;
+        const KeyCode numlock = XKeysymToKeycode(display, XK_Num_Lock);
+        XModifierKeymap* modmap = XGetModifierMapping(display);
+        if (modmap && numlock) {
+            for (int mod = 0; mod < 8; ++mod) {
+                for (int k = 0; k < modmap->max_keypermod; ++k) {
+                    if (modmap->modifiermap[mod * modmap->max_keypermod + k] == numlock) {
+                        mask = (1u << mod);
+                    }
+                }
+            }
         }
-        
-        // Map the window (make it exist)
-        XMapWindow(display, window);
-        XFlush(display);
-        
-        return true;
+        if (modmap) {
+            XFreeModifiermap(modmap);
+        }
+        return mask;
     }
-    
+
+    // A grab only matches the exact modifier state, so register every combination
+    // of the lock modifiers; otherwise NumLock or CapsLock being on breaks hotkeys.
+    template <typename Fn>
+    void for_each_modifier_variant(const KeyBinding& binding, Fn&& fn) {
+        const unsigned int locks[] = {0, LockMask, numlock_mask, LockMask | numlock_mask};
+        for (unsigned int lock : locks) {
+            fn(kHotkeyMods | lock);
+            if (binding.also_with_shift) {
+                fn(kHotkeyMods | ShiftMask | lock);
+            }
+        }
+    }
+
     bool configure_terminal() {
         if (tcgetattr(STDIN_FILENO, &original_termios) != 0) {
             return false;
         }
-        
+
         struct termios new_termios = original_termios;
         // Disable canonical mode and echo
         new_termios.c_lflag &= ~(ICANON | ECHO);
         new_termios.c_cc[VMIN] = 0;  // Non-blocking read
         new_termios.c_cc[VTIME] = 0;
-        
+
         if (tcsetattr(STDIN_FILENO, TCSANOW, &new_termios) != 0) {
             return false;
         }
-        
+
         // Set stdin to non-blocking
         int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
         fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-        
+
         terminal_configured = true;
         return true;
     }
-    
+
     void restore_terminal() {
         if (terminal_configured) {
             tcsetattr(STDIN_FILENO, TCSANOW, &original_termios);
@@ -100,7 +137,7 @@ struct LinuxHotkeyHandler::Impl {
             terminal_configured = false;
         }
     }
-    
+
     void message_loop() {
         XEvent event;
         while (!should_stop) {
@@ -109,64 +146,37 @@ struct LinuxHotkeyHandler::Impl {
             FD_ZERO(&readfds);
             int x11_fd = ConnectionNumber(display);
             FD_SET(x11_fd, &readfds);
-            
+
             struct timeval timeout;
             timeout.tv_sec = 0;
             timeout.tv_usec = 100000; // 100ms
-            
+
             int result = select(x11_fd + 1, &readfds, nullptr, nullptr, &timeout);
-            
+
             if (result > 0 && FD_ISSET(x11_fd, &readfds)) {
                 while (XPending(display) > 0) {
                     XNextEvent(display, &event);
-                    
+
+                    // Only grabbed combinations reach us, so the key alone identifies the action
                     if (event.type == KeyPress) {
-                        KeySym keysym = XLookupKeysym(&event.xkey, 0);
-                        unsigned int state = event.xkey.state;
-                        
-                        // Check for Ctrl+Alt combinations
-                        bool ctrl = (state & ControlMask) != 0;
-                        bool alt = (state & Mod1Mask) != 0;
-                        
-                        if (ctrl && alt) {
-                            handle_x11_hotkey(keysym);
-                        }
+                        handle_x11_hotkey(XLookupKeysym(&event.xkey, 0));
                     }
                 }
             }
         }
     }
-    
+
     void handle_x11_hotkey(KeySym keysym) {
         if (!callback) return;
-        
-        switch (keysym) {
-            case XK_n:
-            case XK_N:
-                callback(HotkeyAction::NEXT_TRACK);
-                break;
-            case XK_p:
-            case XK_P:
-                callback(HotkeyAction::PREVIOUS_TRACK);
-                break;
-            case XK_r:
-            case XK_R:
-                callback(HotkeyAction::PAUSE_RESUME);
-                break;
-            case XK_plus:
-            case XK_equal:
-                callback(HotkeyAction::VOLUME_UP);
-                break;
-            case XK_minus:
-            case XK_underscore:
-                callback(HotkeyAction::VOLUME_DOWN);
-                break;
-            case XK_Escape:
-                callback(HotkeyAction::QUIT);
-                break;
+
+        for (const auto& binding : kBindings) {
+            if (binding.keysym == keysym) {
+                callback(binding.action);
+                return;
+            }
         }
     }
-    
+
     void console_input_loop() {
         while (!should_stop) {
             char c;
@@ -176,10 +186,10 @@ struct LinuxHotkeyHandler::Impl {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
-    
+
     void handle_input(char c) {
         if (!callback) return;
-        
+
         // Map keys to actions (local hotkeys when terminal has focus)
         switch (c) {
             case 'n': case 'N': callback(HotkeyAction::NEXT_TRACK); break;
@@ -201,29 +211,23 @@ LinuxHotkeyHandler::~LinuxHotkeyHandler() {
 bool LinuxHotkeyHandler::initialize() {
     // Try X11 first for global hotkeys
     if (m_impl->create_display()) {
-        if (m_impl->create_window()) {
-            m_impl->x11_available = true;
-        } else {
-            std::cerr << "Warning: Could not create X11 window, falling back to terminal input\n";
-            XCloseDisplay(m_impl->display);
-            m_impl->display = nullptr;
-        }
+        m_impl->x11_available = true;
     } else {
         std::cerr << "Warning: Could not open X11 display, falling back to terminal input\n";
         std::cerr << "Make sure DISPLAY environment variable is set (e.g., export DISPLAY=:0)\n";
     }
-    
+
     // Always configure terminal for local hotkeys
     if (!m_impl->configure_terminal()) {
         std::cerr << "Warning: Could not configure terminal for hotkey input\n";
     }
-    
+
     return true;
 }
 
 void LinuxHotkeyHandler::shutdown() {
     unregister_hotkeys();
-    
+
     m_impl->should_stop = true;
     if (m_impl->message_thread.joinable()) {
         m_impl->message_thread.join();
@@ -231,18 +235,15 @@ void LinuxHotkeyHandler::shutdown() {
     if (m_impl->console_input_thread.joinable()) {
         m_impl->console_input_thread.join();
     }
-    
-    // Null the handles so a second shutdown() (e.g. from the destructor) is a no-op
-    if (m_impl->window) {
-        XDestroyWindow(m_impl->display, m_impl->window);
-        m_impl->window = 0;
-    }
+
+    // Null the handle so a second shutdown() (e.g. from the destructor) is a no-op
     if (m_impl->display) {
         XCloseDisplay(m_impl->display);
         m_impl->display = nullptr;
+        m_impl->root = 0;
     }
     m_impl->x11_available = false;
-    
+
     m_impl->restore_terminal();
 }
 
@@ -251,7 +252,7 @@ void LinuxHotkeyHandler::set_callback(HotkeyCallback callback) {
 }
 
 bool LinuxHotkeyHandler::register_hotkeys() {
-    if (!m_impl->x11_available || !m_impl->display || !m_impl->window) {
+    if (!m_impl->x11_available || !m_impl->display) {
         std::cout << "X11 not available - using terminal input only\n";
         std::cout << "Linux Hotkeys (terminal input):\n";
         std::cout << "  N/n - Next track\n";
@@ -261,84 +262,57 @@ bool LinuxHotkeyHandler::register_hotkeys() {
         std::cout << "  Q/q/ESC - Quit\n";
         return true;
     }
-    
-    // Get keycodes for the keys we want
-    KeyCode n_key = XKeysymToKeycode(m_impl->display, XK_n);
-    KeyCode p_key = XKeysymToKeycode(m_impl->display, XK_p);
-    KeyCode r_key = XKeysymToKeycode(m_impl->display, XK_r);
-    KeyCode plus_key = XKeysymToKeycode(m_impl->display, XK_plus);
-    KeyCode minus_key = XKeysymToKeycode(m_impl->display, XK_minus);
-    KeyCode escape_key = XKeysymToKeycode(m_impl->display, XK_Escape);
-    
-    unsigned int mod_mask = ControlMask | Mod1Mask; // Ctrl+Alt
-    
+
+    Display* display = m_impl->display;
+    XErrorHandler previous_handler = XSetErrorHandler(grab_error_handler);
+
     bool success = true;
-    
-    // Register global hotkeys
-    if (XGrabKey(m_impl->display, n_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+N\n";
-        success = false;
+    for (const auto& binding : kBindings) {
+        const KeyCode keycode = XKeysymToKeycode(display, binding.keysym);
+        if (keycode == 0) {
+            continue;  // Key not present in the current keyboard layout
+        }
+
+        g_grab_failed = false;
+        m_impl->for_each_modifier_variant(binding, [&](unsigned int mods) {
+            XGrabKey(display, keycode, mods, m_impl->root, False, GrabModeAsync, GrabModeAsync);
+        });
+        XSync(display, False);  // Flush so any BadAccess error is delivered now
+
+        if (g_grab_failed) {
+            std::cerr << "Failed to register " << binding.label << " (already in use by another application)\n";
+            success = false;
+        }
     }
-    if (XGrabKey(m_impl->display, p_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+P\n";
-        success = false;
+
+    XSetErrorHandler(previous_handler);
+    m_impl->hotkeys_grabbed = true;
+
+    if (std::getenv("WAYLAND_DISPLAY")) {
+        std::cout << "Note: Wayland session detected. Ctrl+Alt hotkeys only fire while an X11 app has focus;\n"
+                  << "      use the media keys or the system media controls (MPRIS) instead.\n";
     }
-    if (XGrabKey(m_impl->display, r_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+R\n";
-        success = false;
-    }
-    if (XGrabKey(m_impl->display, plus_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+Plus\n";
-        success = false;
-    }
-    if (XGrabKey(m_impl->display, minus_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+Minus\n";
-        success = false;
-    }
-    if (XGrabKey(m_impl->display, escape_key, mod_mask, m_impl->window, False, GrabModeAsync, GrabModeAsync) != Success) {
-        std::cerr << "Failed to register Ctrl+Alt+Escape\n";
-        success = false;
-    }
-    
-    XFlush(m_impl->display);
-    
-    if (success) {
-        std::cout << "Global hotkeys registered successfully!\n";
-        std::cout << "  Ctrl+Alt+N - Next track\n";
-        std::cout << "  Ctrl+Alt+P - Previous track\n";
-        std::cout << "  Ctrl+Alt+R - Pause/Resume\n";
-        std::cout << "  Ctrl+Alt+Plus - Volume up\n";
-        std::cout << "  Ctrl+Alt+Minus - Volume down\n";
-        std::cout << "  Ctrl+Alt+Escape - Quit\n";
-    } else {
-        std::cerr << "Some hotkeys failed to register. They may be in use by another application.\n";
-    }
-    
+
     return success;
 }
 
 void LinuxHotkeyHandler::unregister_hotkeys() {
-    if (!m_impl->display || !m_impl->window) {
+    if (!m_impl->display || !m_impl->hotkeys_grabbed) {
         return;
     }
-    
-    KeyCode n_key = XKeysymToKeycode(m_impl->display, XK_n);
-    KeyCode p_key = XKeysymToKeycode(m_impl->display, XK_p);
-    KeyCode r_key = XKeysymToKeycode(m_impl->display, XK_r);
-    KeyCode plus_key = XKeysymToKeycode(m_impl->display, XK_plus);
-    KeyCode minus_key = XKeysymToKeycode(m_impl->display, XK_minus);
-    KeyCode escape_key = XKeysymToKeycode(m_impl->display, XK_Escape);
-    
-    unsigned int mod_mask = ControlMask | Mod1Mask;
-    
-    XUngrabKey(m_impl->display, n_key, mod_mask, m_impl->window);
-    XUngrabKey(m_impl->display, p_key, mod_mask, m_impl->window);
-    XUngrabKey(m_impl->display, r_key, mod_mask, m_impl->window);
-    XUngrabKey(m_impl->display, plus_key, mod_mask, m_impl->window);
-    XUngrabKey(m_impl->display, minus_key, mod_mask, m_impl->window);
-    XUngrabKey(m_impl->display, escape_key, mod_mask, m_impl->window);
-    
+
+    for (const auto& binding : kBindings) {
+        const KeyCode keycode = XKeysymToKeycode(m_impl->display, binding.keysym);
+        if (keycode == 0) {
+            continue;
+        }
+        m_impl->for_each_modifier_variant(binding, [&](unsigned int mods) {
+            XUngrabKey(m_impl->display, keycode, mods, m_impl->root);
+        });
+    }
+
     XFlush(m_impl->display);
+    m_impl->hotkeys_grabbed = false;
 }
 
 void LinuxHotkeyHandler::process_messages() {
@@ -347,7 +321,7 @@ void LinuxHotkeyHandler::process_messages() {
         m_impl->message_thread = std::thread(&Impl::message_loop, m_impl.get());
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    
+
     if (!m_impl->console_input_thread.joinable()) {
         m_impl->console_input_thread = std::thread(&Impl::console_input_loop, m_impl.get());
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
