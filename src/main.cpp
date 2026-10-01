@@ -4,6 +4,7 @@
 #include "hotkey_handler.hpp"
 #include "file_scanner.hpp"
 #include "media_controls.hpp"
+#include "player_gui.hpp"
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -70,6 +71,7 @@ private:
     std::unique_ptr<IPlaylist> m_playlist;
     std::unique_ptr<IHotkeyHandler> m_hotkey_handler;
     std::unique_ptr<IMediaControls> m_media_controls;
+    std::unique_ptr<IPlayerGui> m_gui;  // only with --gui
     std::unique_ptr<IFileScanner> m_file_scanner;
     std::unique_ptr<IAudioDecoder> m_current_decoder;
     
@@ -84,6 +86,7 @@ private:
     const Song* m_current_song = nullptr;
     float m_volume = DEFAULT_VOLUME;
     bool m_preview_mode = false;
+    bool m_gui_requested = false;
     
     // Safety net if the engine never reports completion after decoder EOF
     // (counts playing time only, so pausing near the end does not trigger it)
@@ -108,7 +111,8 @@ private:
     static constexpr int REINDEX_INTERVAL_MINUTES = 10;
 
 public:
-    MusicPlayer(bool preview_mode = false) : m_preview_mode(preview_mode) {
+    MusicPlayer(bool preview_mode = false, bool gui = false)
+        : m_preview_mode(preview_mode), m_gui_requested(gui) {
         m_audio_engine = create_audio_engine();
         m_playlist = create_playlist();
         m_hotkey_handler = create_hotkey_handler();
@@ -144,6 +148,10 @@ public:
         if (m_media_controls->initialize([this](HotkeyAction action) { handle_hotkey(action); })) {
             std::cout << "Media controls enabled (media keys, system media menu)\n";
             m_media_controls->set_volume(m_volume);
+        }
+        
+        if (m_gui_requested && !initialize_gui()) {
+            return false;
         }
         
         return true;
@@ -259,11 +267,41 @@ public:
                 handle_track_advance();
             }
             
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (m_gui) {
+                m_gui->pump(0.1);  // window events; commands run on this thread
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
     }
     
 private:
+    bool initialize_gui() {
+        m_gui = create_player_gui();
+        if (!m_gui) {
+            std::cerr << "This build of nigamp has no GUI support (FLTK was not found at build time)\n";
+            return false;
+        }
+        m_gui->set_volume_callback([this](double volume) { set_volume(static_cast<float>(volume)); });
+        m_gui->set_preview_mode(m_preview_mode);
+        m_gui->set_volume(m_volume);
+        if (!m_gui->initialize([this](HotkeyAction action) { handle_hotkey(action); })) {
+            std::cerr << "Failed to open the GUI window (no display available)\n";
+            m_gui.reset();
+            return false;
+        }
+        return true;
+    }
+    
+    // Pushes player state to the desktop media controls and, with --gui, the window
+    template <typename F>
+    void notify_media_views(F&& update) {
+        update(*m_media_controls);
+        if (m_gui) {
+            update(*m_gui);
+        }
+    }
+    
     void handle_playback_completion(const CompletionResult& result) {
         if (result.error_code != AudioEngineError::SUCCESS) {
             ERROR_LOG("Audio playback completed with error: " << result.error_message);
@@ -374,21 +412,25 @@ private:
         if (m_audio_engine->is_playing()) {
             m_audio_engine->pause();
             m_is_paused = true;
-            m_media_controls->set_playback_status(PlaybackStatus::PAUSED);
+            notify_media_views([](IMediaControls& view) { view.set_playback_status(PlaybackStatus::PAUSED); });
             std::cout << "Paused\n";
         } else {
             m_audio_engine->resume();
             m_is_paused = false;
-            m_media_controls->set_playback_status(PlaybackStatus::PLAYING);
+            notify_media_views([](IMediaControls& view) { view.set_playback_status(PlaybackStatus::PLAYING); });
             std::cout << "Resumed\n";
         }
     }
     
     void adjust_volume(float delta) {
-        m_volume = std::clamp(m_volume + delta, 0.0f, 1.0f);
+        set_volume(m_volume + delta);
+    }
+    
+    void set_volume(float volume) {
+        m_volume = std::clamp(volume, 0.0f, 1.0f);
         m_audio_engine->set_volume(m_volume);
-        m_media_controls->set_volume(m_volume);
-        std::cout << "Volume: " << static_cast<int>(m_volume * 100) << "%\n";
+        notify_media_views([this](IMediaControls& view) { view.set_volume(m_volume); });
+        std::cout << "Volume: " << static_cast<int>(m_volume * 100 + 0.5f) << "%\n";
     }
     
     void quit() {
@@ -438,8 +480,12 @@ private:
             return;
         }
         
-        m_media_controls->set_track({m_current_song->title, m_current_song->file_path, m_current_song_duration});
-        m_media_controls->set_playback_status(m_is_paused ? PlaybackStatus::PAUSED : PlaybackStatus::PLAYING);
+        const TrackInfo track{m_current_song->title, m_current_song->file_path, m_current_song_duration};
+        const PlaybackStatus status = m_is_paused ? PlaybackStatus::PAUSED : PlaybackStatus::PLAYING;
+        notify_media_views([&](IMediaControls& view) {
+            view.set_track(track);
+            view.set_playback_status(status);
+        });
         
         m_playback_thread = std::thread(&MusicPlayer::playback_loop, this);
     }
@@ -495,6 +541,9 @@ private:
     void update_countdown_display(double played_seconds) {
         const char* status = m_is_paused ? "⏸️  [PAUSED]" : (m_preview_mode ? "🎵 [PREVIEW]" : "🎵");
         const double total = m_preview_mode ? PREVIEW_DURATION_SECONDS : m_current_song_duration;
+        if (m_gui) {
+            m_gui->set_position(played_seconds, total);
+        }
         if (total <= 0) {
             return;
         }
@@ -673,6 +722,9 @@ private:
         if (m_media_controls) {
             m_media_controls->shutdown();
         }
+        if (m_gui) {
+            m_gui->shutdown();
+        }
         
         // Stop audio playback first
         if (m_audio_engine) {
@@ -716,13 +768,16 @@ private:
 int main(int argc, char* argv[]) {
     try {
         bool preview_mode = false;
+        bool gui = false;
         std::string target_path = "";
         bool is_file = false;
         
         // Parse command line arguments
         for (int i = 1; i < argc; ++i) {
             std::string arg(argv[i]);
-            if (arg == "--preview" || arg == "-p") {
+            if (arg == "--gui" || arg == "-g") {
+                gui = true;
+            } else if (arg == "--preview" || arg == "-p") {
                 preview_mode = true;
                 std::cout << "Preview mode enabled: Playing 10 seconds per song\n";
             } else if (arg == "--file" || arg == "-f") {
@@ -747,6 +802,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "  --file <path>, -f <path>     Play specific MP3/WAV file\n";
                 std::cout << "  --folder <path>, -d <path>   Play all files from directory\n";
                 std::cout << "  --preview, -p                Play only first 10 seconds of each song\n";
+                std::cout << "  --gui, -g                    Show the mini-player window\n";
                 std::cout << "  --help, -h                   Show this help message\n";
                 std::cout << "\nUsage Examples:\n";
 #ifdef _WIN32
@@ -796,7 +852,7 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        nigamp::MusicPlayer player(preview_mode);
+        nigamp::MusicPlayer player(preview_mode, gui);
         
         if (!player.initialize()) {
             std::cerr << "Failed to initialize music player\n";

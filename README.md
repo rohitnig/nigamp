@@ -33,6 +33,7 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 - **Visual status indicators**: 🎵 for playing, ⏸️ [PAUSED] for paused, [PREVIEW] for preview mode
 - **Same-line updates**: Countdown refreshes on the same console line without scrolling
 - **Command-line options**: Flexible file and folder loading with preview mode
+- **Mini-player window** (`--gui`): Optional compact window with title, progress, transport buttons and a volume slider (FLTK)
 
 ## Controls
 
@@ -77,6 +78,20 @@ A minimal-memory, high-quality command-line audio player for Windows that target
 
 Note: Ctrl+Alt hotkeys use X11 key grabs. On Wayland sessions (the default on Ubuntu 22.04+, and the only session on Ubuntu 26.04 / GNOME 50) they only fire while an X11 app has focus — use the media keys instead. Ctrl+Alt+Plus is Ctrl+Alt+Shift+= on US layouts; both work. NumLock/CapsLock don't affect the hotkeys.
 
+### Mini-Player Window (`--gui`)
+- **Buttons**: Previous, Play/Pause, Next; click or drag the volume slider
+- **Mouse wheel**: Volume up/down
+- **Keys** (window focused):
+  - **Space/R**: Pause/Resume
+  - **→/N** and **←/P**: Next / Previous track
+  - **↑/+** and **↓/-**: Volume up/down
+  - **T** or the pin button: Stay on top (X11/XWayland and Windows)
+  - **C** or double-click empty space: Switch to/from the compact bar — a thin, borderless, always-on-top strip
+  - **Drag empty space** to move the window (the only way to move the borderless bar)
+  - **Q/Esc** or closing the window: Quit
+- Mode, position, width and stay-on-top are remembered in `~/.config/nigamp/gui.conf` (`%APPDATA%\nigamp\gui.conf` on Windows)
+- **Linux desktop entry**: run `./install_desktop_entry.sh` once so the window gets its own Alt+Tab/dock entry and icon (and Nigamp appears in the app grid); `--uninstall` removes it
+
 ## Usage
 
 ### Command Line Options
@@ -98,6 +113,10 @@ nigamp -d "/home/user/Music"
 # Preview mode - play first 10 seconds of each song
 nigamp --preview
 nigamp -p
+
+# Mini-player window (terminal mode stays the default)
+nigamp --gui
+nigamp -g -d "/path/to/Music"
 
 # Combine options
 nigamp -f song.mp3 -p    # Preview single file
@@ -164,7 +183,8 @@ nigamp -h
 3. **ALSA development libraries** (libasound2-dev)
 4. **X11 development libraries** (libx11-dev) - for Ctrl+Alt global hotkeys on X11
 5. **systemd development libraries** (libsystemd-dev) - for media keys / MPRIS (optional)
-5. **Git** (for downloading Google Test)
+6. **FLTK 1.4 development libraries** (libfltk1.4-dev) - for the `--gui` mini-player (optional)
+7. **Git** (for downloading Google Test)
 
 ### Required Libraries
 
@@ -202,7 +222,7 @@ build\nigamp_tests.exe
 ```bash
 # Install dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev libsystemd-dev
+sudo apt-get install -y build-essential cmake libasound2-dev libx11-dev libsystemd-dev libfltk1.4-dev
 
 # Setup dependencies (run once)
 ./setup_libraries.sh

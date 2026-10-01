@@ -74,6 +74,68 @@ elseif(UNIX AND NOT APPLE)
     endif()
 endif()
 
+# Optional mini-player window (--gui) built with FLTK 1.4
+option(NIGAMP_GUI "Build the FLTK mini-player window (--gui)" ON)
+set(NIGAMP_FLTK_TARGET "")
+if(NIGAMP_GUI)
+    if(UNIX)
+        # Use fltk-config: Debian/Ubuntu's FLTKConfig.cmake has unexpanded ${DEB_HOST_MULTIARCH} paths
+        find_program(FLTK_CONFIG fltk-config)
+        if(FLTK_CONFIG)
+            execute_process(COMMAND ${FLTK_CONFIG} --version
+                OUTPUT_VARIABLE NIGAMP_FLTK_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif()
+    endif()
+    if(NIGAMP_FLTK_VERSION AND NIGAMP_FLTK_VERSION VERSION_GREATER_EQUAL 1.4)
+        execute_process(COMMAND ${FLTK_CONFIG} --cxxflags
+            OUTPUT_VARIABLE NIGAMP_FLTK_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${FLTK_CONFIG} --ldflags
+            OUTPUT_VARIABLE NIGAMP_FLTK_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        separate_arguments(NIGAMP_FLTK_CXXFLAGS UNIX_COMMAND "${NIGAMP_FLTK_CXXFLAGS}")
+        separate_arguments(NIGAMP_FLTK_LDFLAGS UNIX_COMMAND "${NIGAMP_FLTK_LDFLAGS}")
+        add_library(nigamp_fltk INTERFACE)
+        target_compile_options(nigamp_fltk INTERFACE ${NIGAMP_FLTK_CXXFLAGS})
+        target_link_libraries(nigamp_fltk INTERFACE ${NIGAMP_FLTK_LDFLAGS})
+        set(NIGAMP_FLTK_TARGET nigamp_fltk)
+    else()
+        find_package(FLTK 1.4 CONFIG QUIET)
+    endif()
+    if(NIGAMP_FLTK_TARGET)
+        # found via fltk-config
+    elseif(FLTK_FOUND)
+        if(TARGET fltk::fltk)
+            set(NIGAMP_FLTK_TARGET fltk::fltk)
+        else()
+            set(NIGAMP_FLTK_TARGET fltk)
+        endif()
+    elseif(WIN32)
+        # No system FLTK on Windows: fetch and build it statically (needs network on first configure)
+        include(FetchContent)
+        set(FLTK_BUILD_TEST OFF CACHE BOOL "" FORCE)
+        set(FLTK_BUILD_FLUID OFF CACHE BOOL "" FORCE)
+        set(FLTK_BUILD_FLTK_OPTIONS OFF CACHE BOOL "" FORCE)
+        set(FLTK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(fltk
+            GIT_REPOSITORY https://github.com/fltk/fltk.git
+            GIT_TAG        release-1.4.4
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(fltk)
+        set(NIGAMP_FLTK_TARGET fltk::fltk)
+    endif()
+endif()
+
+if(NIGAMP_FLTK_TARGET)
+    list(APPEND SOURCES src/fltk_player_gui.cpp)
+    message(STATUS "FLTK found - mini-player GUI (--gui) enabled")
+else()
+    list(APPEND SOURCES src/null_player_gui.cpp)
+    if(NIGAMP_GUI)
+        message(WARNING "FLTK 1.4 not found - GUI (--gui) disabled. Install libfltk1.4-dev: sudo apt-get install libfltk1.4-dev")
+    endif()
+endif()
+
 # Headers
 set(HEADERS
     include/audio_engine.hpp
@@ -82,6 +144,7 @@ set(HEADERS
     include/hotkey_handler.hpp
     include/file_scanner.hpp
     include/media_controls.hpp
+    include/player_gui.hpp
     include/types.hpp
 )
 
@@ -116,6 +179,10 @@ elseif(UNIX AND NOT APPLE)
     else()
         message(WARNING "X11 library not found. Global hotkeys will not work. Install libx11-dev: sudo apt-get install libx11-dev")
     endif()
+endif()
+
+if(NIGAMP_FLTK_TARGET)
+    target_link_libraries(nigamp ${NIGAMP_FLTK_TARGET})
 endif()
 
 # Test executable
