@@ -23,7 +23,12 @@ struct Mp3Decoder::Impl {
     mp3dec_t mp3d;
     std::vector<uint8_t> file_data;
     size_t data_offset = 0;
+    size_t first_frame_offset = 0;
     std::string file_path;
+
+    // Samples from the last decoded frame that did not fit in the caller's buffer.
+    std::vector<int16_t> leftover;
+    bool stream_done = false;
 };
 
 Mp3Decoder::Mp3Decoder() : m_impl(std::make_unique<Impl>()) {}
@@ -64,8 +69,9 @@ bool Mp3Decoder::open(const std::string& file_path) {
     size_t offset = 0;
     int samples = 0;
     
-    // Search for valid MP3 frame (skip up to 32KB for ID3 tags)
-    while (offset < std::min(file_size, size_t(32768))) {
+    // Search for a valid MP3 frame (skip ID3 tags / junk at start).
+    // Some real-world files can have large tags, so don't hard-stop at 32KB.
+    while (offset < file_size) {
         samples = mp3dec_decode_frame(&m_impl->mp3d, 
                                      m_impl->file_data.data() + offset, 
                                      file_size - offset, 
@@ -89,11 +95,13 @@ bool Mp3Decoder::open(const std::string& file_path) {
         m_impl->format.channels = 2;
         m_impl->format.bits_per_sample = 16;
         m_impl->duration = 1.0;  // 1 second default
+        m_impl->first_frame_offset = 0;
     } else {
         // Use actual MP3 format
         m_impl->format.sample_rate = info.hz;
         m_impl->format.channels = info.channels;
         m_impl->format.bits_per_sample = 16;
+        m_impl->first_frame_offset = offset;
         
         // Estimate duration based on bitrate
         if (info.bitrate_kbps > 0) {
@@ -105,12 +113,16 @@ bool Mp3Decoder::open(const std::string& file_path) {
     }
     
     m_impl->file_path = file_path;
-    m_impl->data_offset = 0;
     m_impl->is_open = true;
     m_impl->is_eof = false;
+    m_impl->stream_done = false;
+    m_impl->leftover.clear();
     
     // Reset decoder for actual playback
     mp3dec_init(&m_impl->mp3d);
+
+    // Start decoding from the first detected frame to avoid re-scanning tags/junk.
+    m_impl->data_offset = m_impl->first_frame_offset;
     
     // MP3 successfully opened - info available in format
     
@@ -125,9 +137,18 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
     buffer.clear();
     buffer.reserve(max_samples);
     
-    size_t samples_decoded = 0;
+    // Drain samples carried over from the previous call first
+    auto& leftover = m_impl->leftover;
+    const size_t carried = std::min(leftover.size(), max_samples);
+    buffer.insert(buffer.end(), leftover.begin(), leftover.begin() + carried);
+    leftover.erase(leftover.begin(), leftover.begin() + carried);
     
-    while (samples_decoded < max_samples && m_impl->data_offset < m_impl->file_data.size()) {
+    while (buffer.size() < max_samples && !m_impl->stream_done) {
+        if (m_impl->data_offset >= m_impl->file_data.size()) {
+            m_impl->stream_done = true;
+            break;
+        }
+        
         mp3dec_frame_info_t info;
         short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
         
@@ -139,52 +160,33 @@ bool Mp3Decoder::decode(AudioBuffer& buffer, size_t max_samples) {
         if (samples == 0) {
             if (info.frame_bytes == 0) {
                 // End of file or no more frames
-                m_impl->is_eof = true;
+                m_impl->stream_done = true;
                 break;
             }
             // Skip invalid frame
-            m_impl->data_offset += (info.frame_bytes > 0) ? info.frame_bytes : 1;
+            m_impl->data_offset += info.frame_bytes;
             continue;
         }
         
-        // samples is the number of PCM samples PER CHANNEL
-        // For stereo, total samples = samples * channels
-        int total_samples = samples * info.channels;
-        
-        // Add samples to buffer with volume boost (samples are interleaved: L,R,L,R...)
-        constexpr float gain = 1.5f; // Boost volume by 50%
-        for (int i = 0; i < total_samples && samples_decoded < max_samples; ++i) {
-            // Apply gain and clamp to prevent distortion
-            int32_t boosted = static_cast<int32_t>(pcm[i] * gain);
-            boosted = std::max(-32768, std::min(32767, boosted));
-            buffer.push_back(static_cast<int16_t>(boosted));
-            samples_decoded++;
-        }
+        // samples is PER CHANNEL; pcm is interleaved (L,R,L,R...)
+        const size_t total_samples = static_cast<size_t>(samples) * info.channels;
+        const size_t to_copy = std::min(total_samples, max_samples - buffer.size());
+        buffer.insert(buffer.end(), pcm, pcm + to_copy);
+        // Keep the rest of the frame for the next call instead of dropping it
+        leftover.assign(pcm + to_copy, pcm + total_samples);
         
         m_impl->data_offset += info.frame_bytes;
-        
-        // If we decoded a full frame, break to avoid over-filling
-        if (samples_decoded > 0) {
-            break;
-        }
     }
     
-    if (m_impl->data_offset >= m_impl->file_data.size()) {
-        m_impl->is_eof = true;
-    }
+    m_impl->is_eof = m_impl->stream_done && leftover.empty();
     
-    // Handle case where no samples were decoded this time
-    if (samples_decoded == 0 && !m_impl->is_eof) {
-        // Return false - let playback loop handle it
-        return false;
-    }
-    
-    return samples_decoded > 0;
+    return !buffer.empty();
 }
 
 void Mp3Decoder::close() {
     if (m_impl->is_open) {
         m_impl->file_data.clear();
+        m_impl->leftover.clear();
         m_impl->data_offset = 0;
         m_impl->is_open = false;
     }
@@ -206,7 +208,9 @@ bool Mp3Decoder::seek(double seconds) {
     // Simple seek implementation: reset to beginning if seeking to 0
     if (seconds <= 0.0) {
         mp3dec_init(&m_impl->mp3d);
-        m_impl->data_offset = 0;
+        m_impl->data_offset = m_impl->first_frame_offset;
+        m_impl->leftover.clear();
+        m_impl->stream_done = false;
         m_impl->is_eof = false;
         return true;
     }

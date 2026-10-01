@@ -85,9 +85,12 @@ struct AlsaAudioEngine::Impl {
             std::cerr << "ALSA: Cannot set sample rate: " << snd_strerror(err) << std::endl;
             return false;
         }
+        // ALSA may negotiate a nearby rate; keep our format consistent with reality.
+        format.sample_rate = sample_rate;
         
-        // Set buffer size (2 seconds of audio)
-        buffer_size = format.sample_rate * 2;
+        // Set buffer size (500ms of audio) in FRAMES. The player throttles decoding,
+        // so a large device buffer only adds stop/pause latency.
+        buffer_size = static_cast<size_t>(format.sample_rate) / 2;
         snd_pcm_uframes_t buffer_frames = buffer_size;
         err = snd_pcm_hw_params_set_buffer_size_near(pcm_handle, hw_params, &buffer_frames);
         if (err < 0) {
@@ -96,8 +99,8 @@ struct AlsaAudioEngine::Impl {
         }
         buffer_size = buffer_frames;
         
-        // Set period size (50ms of audio for low latency)
-        period_size = format.sample_rate / 20; // 50ms
+        // Set period size (50ms of audio for low latency) in FRAMES
+        period_size = static_cast<size_t>(format.sample_rate) / 20; // 50ms
         snd_pcm_uframes_t period_frames = period_size;
         err = snd_pcm_hw_params_set_period_size_near(pcm_handle, hw_params, &period_frames, 0);
         if (err < 0) {
@@ -117,9 +120,39 @@ struct AlsaAudioEngine::Impl {
     
     void check_completion() {
         if (eof_signaled.load() && pending_samples.empty()) {
-            bool time_elapsed = is_audio_playback_complete_by_time();
-            
-            if (time_elapsed) {
+            // Prefer querying actual device delay (frames still queued in ALSA).
+            // This is more reliable than time-based estimates and avoids premature timeouts.
+            if (pcm_handle) {
+                // snd_pcm_avail() syncs the hardware pointer. On plugin devices (e.g. PipeWire)
+                // that is what surfaces the end-of-data underrun; without it snd_pcm_state()
+                // stays RUNNING and snd_pcm_delay() stops decreasing.
+                const snd_pcm_sframes_t avail = snd_pcm_avail(pcm_handle);
+                if (avail >= 0 && static_cast<size_t>(avail) >= buffer_size) {
+                    fire_completion_callback(AudioEngineError::SUCCESS);
+                    return;
+                }
+
+                // Once the device has drained it either underruns (XRUN) or was never
+                // started (tiny file); either way nothing is left to play.
+                const snd_pcm_state_t state = snd_pcm_state(pcm_handle);
+                if (avail == -EPIPE || state == SND_PCM_STATE_XRUN || state == SND_PCM_STATE_PREPARED ||
+                    state == SND_PCM_STATE_SETUP) {
+                    fire_completion_callback(AudioEngineError::SUCCESS);
+                    return;
+                }
+
+                snd_pcm_sframes_t delay_frames = 0;
+                const int delay_err = snd_pcm_delay(pcm_handle, &delay_frames);
+                if (delay_err == 0) {
+                    if (delay_frames <= 0) {
+                        fire_completion_callback(AudioEngineError::SUCCESS);
+                    }
+                    return;
+                }
+            }
+
+            // Fallback to time-based completion if delay isn't available.
+            if (is_audio_playback_complete_by_time()) {
                 fire_completion_callback(AudioEngineError::SUCCESS);
             }
         }
@@ -166,10 +199,35 @@ struct AlsaAudioEngine::Impl {
     
     void playback_loop() {
         while (!should_stop) {
-            if (is_playing && !is_paused && pcm_handle) {
+            if (!is_playing || is_paused || !pcm_handle) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+
+            bool idle = false;
+            {
+                std::lock_guard<std::mutex> lock(buffer_mutex);
+                if (pending_samples.empty()) {
+                    // Nothing to write: check for end of track
+                    check_completion();
+                    idle = true;
+                }
+            }
+            if (idle) {
+                // Sleep outside the lock so write_samples() can get in
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+
+            // Wait until ALSA can accept frames; this prevents underruns when the
+            // negotiated period is small (e.g. a few ms), which a fixed 10ms sleep can miss.
+            const int wait_res = snd_pcm_wait(pcm_handle, 100 /*ms*/);
+            if (wait_res < 0) {
+                // Underrun (-EPIPE) or suspend (-ESTRPIPE): recover or the PCM stays stuck
+                snd_pcm_recover(pcm_handle, wait_res, 1);
+            } else if (wait_res > 0) {
                 update_buffer();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
     
@@ -177,25 +235,23 @@ struct AlsaAudioEngine::Impl {
         std::lock_guard<std::mutex> lock(buffer_mutex);
         
         if (pending_samples.empty()) {
-            check_completion();
             return;
         }
         
         // Get available space in ALSA buffer
         snd_pcm_sframes_t avail = snd_pcm_avail(pcm_handle);
         if (avail < 0) {
-            // Handle underrun
-            if (avail == -EPIPE) {
-                snd_pcm_prepare(pcm_handle);
-            }
+            // Handle underrun / suspend / other recoverable errors
+            snd_pcm_recover(pcm_handle, static_cast<int>(avail), 1);
             return;
         }
         
-        // Write up to period_size samples
-        size_t samples_to_write = std::min(
-            static_cast<size_t>(avail),
-            std::min(pending_samples.size(), period_size * format.channels)
-        );
+        // snd_pcm_avail() returns available FRAMES; pending_samples is interleaved SAMPLES.
+        const size_t channels = std::max<size_t>(1, format.channels);
+        const size_t pending_frames = pending_samples.size() / channels;
+        const size_t avail_frames = static_cast<size_t>(avail);
+        const size_t frames_to_write = std::min({avail_frames, pending_frames, period_size});
+        const size_t samples_to_write = frames_to_write * channels;
         
         if (samples_to_write == 0) {
             return;
@@ -214,16 +270,12 @@ struct AlsaAudioEngine::Impl {
         snd_pcm_sframes_t frames_written = snd_pcm_writei(
             pcm_handle, 
             write_buffer.data(), 
-            samples_to_write / format.channels
+            frames_to_write
         );
         
         if (frames_written < 0) {
-            // Handle errors
-            if (frames_written == -EPIPE) {
-                snd_pcm_prepare(pcm_handle);
-            } else if (frames_written == -ESTRPIPE) {
-                snd_pcm_resume(pcm_handle);
-            }
+            // Recover from underrun/suspend
+            snd_pcm_recover(pcm_handle, static_cast<int>(frames_written), 1);
             return;
         }
         
@@ -237,9 +289,10 @@ struct AlsaAudioEngine::Impl {
         
         // Update timing-based completion tracking
         last_audio_written_time = std::chrono::steady_clock::now();
-        size_t buffer_samples = buffer_size * format.channels;
+        // buffer_size is in FRAMES
+        size_t buffer_frames = buffer_size;
         estimated_remaining_ms = std::chrono::milliseconds(
-            (buffer_samples * 1000) / format.sample_rate);
+            (buffer_frames * 1000) / format.sample_rate);
     }
 };
 
@@ -250,6 +303,13 @@ AlsaAudioEngine::~AlsaAudioEngine() {
 }
 
 bool AlsaAudioEngine::initialize(const AudioFormat& fmt) {
+    // If we're reinitializing (e.g. next track with different sample rate),
+    // close the existing handle to avoid stale ALSA params.
+    if (m_impl->pcm_handle) {
+        snd_pcm_close(m_impl->pcm_handle);
+        m_impl->pcm_handle = nullptr;
+    }
+
     m_impl->format = fmt;
     
     if (!m_impl->open_pcm()) {

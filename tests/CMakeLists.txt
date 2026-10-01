@@ -38,6 +38,12 @@ elseif(UNIX AND NOT APPLE)
         test_hotkey_handler.cpp
         ${CMAKE_SOURCE_DIR}/src/linux_hotkey_handler.cpp
     )
+    find_library(X11_LIBRARY X11)
+    if(X11_LIBRARY)
+        target_link_libraries(test_hotkey_handler ${X11_LIBRARY})
+    else()
+        message(WARNING "X11 library not found for test_hotkey_handler")
+    endif()
 endif()
 
 # Include directories for hotkey test
@@ -60,6 +66,12 @@ elseif(UNIX AND NOT APPLE)
         ${CMAKE_SOURCE_DIR}/src/linux_hotkey_handler.cpp
         ${CMAKE_SOURCE_DIR}/src/playlist.cpp
     )
+    find_library(X11_LIBRARY X11)
+    if(X11_LIBRARY)
+        target_link_libraries(test_music_player_simulation ${X11_LIBRARY})
+    else()
+        message(WARNING "X11 library not found for test_music_player_simulation")
+    endif()
 endif()
 
 # Include directories for music player test

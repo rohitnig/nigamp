@@ -232,12 +232,16 @@ void LinuxHotkeyHandler::shutdown() {
         m_impl->console_input_thread.join();
     }
     
+    // Null the handles so a second shutdown() (e.g. from the destructor) is a no-op
     if (m_impl->window) {
         XDestroyWindow(m_impl->display, m_impl->window);
+        m_impl->window = 0;
     }
     if (m_impl->display) {
         XCloseDisplay(m_impl->display);
+        m_impl->display = nullptr;
     }
+    m_impl->x11_available = false;
     
     m_impl->restore_terminal();
 }
